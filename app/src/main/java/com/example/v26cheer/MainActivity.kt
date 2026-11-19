@@ -15,10 +15,10 @@ import android.text.Editable
 import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
-import android.view.WindowInsetsController
 import android.widget.*
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.view.WindowCompat
 
 class MainActivity : ComponentActivity() {
 
@@ -127,17 +127,17 @@ class MainActivity : ComponentActivity() {
     // ── 화면 ──
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
-        window.statusBarColor = cBg
-        window.insetsController?.setSystemBarsAppearance(
-            WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS,
-            WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
-        )
-
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(20), dp(16), dp(32))
         }
         setContentView(ScrollView(this).apply { setBackgroundColor(cBg); isFillViewport = true; addView(root) })
+
+        // 화면을 만든 뒤에 상단바 색 지정 (일부 기기에서 먼저 호출하면 앱이 꺼짐)
+        runCatching {
+            window.statusBarColor = cBg
+            WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightStatusBars = true
+        }
 
         // 헤더
         val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
