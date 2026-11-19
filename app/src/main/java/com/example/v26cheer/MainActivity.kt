@@ -1,6 +1,7 @@
 package com.example.v26cheer
 
 import android.Manifest
+import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -8,6 +9,8 @@ import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.media.AudioAttributes
+import android.media.MediaPlayer
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Bundle
@@ -30,29 +33,35 @@ class MainActivity : ComponentActivity() {
     private val cText = Color.parseColor("#111827")
     private val cSub = Color.parseColor("#6B7280")
     private val cLine = Color.parseColor("#E5E7EB")
-    private val cGreen = Color.parseColor("#16A34A")
     private val cRed = Color.parseColor("#DC2626")
 
     private lateinit var listBox: LinearLayout
     private lateinit var nameInput: EditText
     private lateinit var toggle: Button
     private lateinit var statusPill: TextView
-    private var pendingKind = "cheer"   // "cheer" 또는 "walk"
+    private var pendingKind = "cheer"     // "cheer" 또는 "walk"
+    private var pendingName: String? = null  // 기존 선수 수정 중이면 그 선수 이름
+
+    private var previewPlayer: MediaPlayer? = null
+    private var previewFx: Fx.Handle? = null
+
+    private class Act(val label: String, val run: () -> Unit)
 
     private val pickAudio = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
-        val name = nameInput.text.toString().trim()
+        val name = pendingName ?: nameInput.text.toString().trim()
+        val editing = pendingName != null
+        pendingName = null
         if (uri == null || name.isEmpty()) return@registerForActivityResult
         contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         val list = Store.players(this)
-        val old = list.firstOrNull { it.name == name }
-        list.removeAll { it.name == name }
+        val idx = list.indexOfFirst { it.name == name }
+        val old = if (idx >= 0) list[idx] else null
         val s = uri.toString()
-        list.add(
-            if (pendingKind == "cheer") Player(name, s, old?.walk)
-            else Player(name, old?.cheer, s)
-        )
+        val np = if (pendingKind == "cheer") Player(name, s, old?.walk) else Player(name, old?.cheer, s)
+        if (idx >= 0) list[idx] = np else list.add(np)
         Store.savePlayers(this, list)
         refreshList()
+        if (!editing) nameInput.setText("")
         toast(if (pendingKind == "cheer") "응원가가 등록됐어요" else "등장곡이 등록됐어요")
     }
 
@@ -127,13 +136,13 @@ class MainActivity : ComponentActivity() {
     // ── 화면 ──
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
+
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(20), dp(16), dp(32))
         }
         setContentView(ScrollView(this).apply { setBackgroundColor(cBg); isFillViewport = true; addView(root) })
 
-        // 화면을 만든 뒤에 상단바 색 지정 (일부 기기에서 먼저 호출하면 앱이 꺼짐)
         runCatching {
             window.statusBarColor = cBg
             WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightStatusBars = true
@@ -174,19 +183,30 @@ class MainActivity : ComponentActivity() {
         nameInput = edit("선수 이름 (예: 허인서)")
         c2.addView(nameInput)
         val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutParams = lp(12) }
-        btnRow.addView(btn("🎵 응원가", cPrimary, true).apply { setOnClickListener { pick("cheer") } },
+        btnRow.addView(btn("🎵 응원가", cPrimary, true).apply { setOnClickListener { pickNew("cheer") } },
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(6) })
-        btnRow.addView(btn("🎤 등장곡 (선택)", cPrimary, false).apply { setOnClickListener { pick("walk") } },
+        btnRow.addView(btn("🎤 등장곡 (선택)", cPrimary, false).apply { setOnClickListener { pickNew("walk") } },
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(6) })
         c2.addView(btnRow)
-        listBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = lp(8) }
+        c2.addView(TextView(this).apply {
+            text = "등록한 선수를 누르면 응원가·등장곡을 바꾸거나 미리 들어볼 수 있어요."
+            textSize = 12f; setTextColor(cSub); setPadding(0, dp(12), 0, 0)
+        })
+        listBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = lp(4) }
         c2.addView(listBox)
         root.addView(c2)
 
-        // 3. 재생 시간
+        // 3. 소리 설정
         val c3 = card()
-        c3.addView(title("3. 응원가 재생 시간"))
-        c3.addView(slider("sec", 120, 25))
+        c3.addView(title("3. 소리 설정"))
+        c3.addView(label("응원가 재생 시간"))
+        c3.addView(slider("sec", 120, 25) { if (it == 0) "끝까지 재생" else "${it}초" })
+        c3.addView(label("구장 울림 효과", 16))
+        c3.addView(slider("reverb", 100, 50) { if (it == 0) "끄기" else "$it%" })
+        c3.addView(TextView(this).apply {
+            text = "응원가와 등장곡이 넓은 야구장에서 울리는 것처럼 들려요. 기기에 따라 효과가 약하거나 없을 수 있어요."
+            textSize = 12f; setTextColor(cSub); setPadding(0, dp(8), 0, 0)
+        })
         root.addView(c3)
 
         // 시작 버튼
@@ -207,17 +227,16 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onResume() { super.onResume(); updateToggle() }
+    override fun onPause() { stopPreview(); super.onPause() }
 
-    private fun pick(kind: String) {
-        if (nameInput.text.isBlank()) { toast("먼저 선수 이름을 입력하세요"); return }
-        pendingKind = kind
-        pickAudio.launch(arrayOf("audio/*"))
+    private fun label(t: String, top: Int = 12) = TextView(this).apply {
+        text = t; textSize = 13f; setTextColor(cSub)
+        layoutParams = lp(top)
     }
 
-    private fun slider(key: String, max: Int, def: Int): View {
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = lp(10) }
+    private fun slider(key: String, max: Int, def: Int, fmt: (Int) -> String): View {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = lp(4) }
         val tv = TextView(this).apply { textSize = 15f; setTypeface(typeface, Typeface.BOLD); setTextColor(cAccent) }
-        fun fmt(v: Int) = if (v == 0) "끝까지 재생" else "${v}초"
         val cur = Store.int(this, key, def)
         tv.text = fmt(cur)
         val sb = SeekBar(this).apply {
@@ -236,6 +255,96 @@ class MainActivity : ComponentActivity() {
         return box
     }
 
+    // ── 선수 추가 / 수정 ──
+    private fun pickNew(kind: String) {
+        if (nameInput.text.isBlank()) { toast("먼저 선수 이름을 입력하세요"); return }
+        pendingName = null
+        pendingKind = kind
+        pickAudio.launch(arrayOf("audio/*"))
+    }
+
+    private fun pickFor(p: Player, kind: String) {
+        pendingName = p.name
+        pendingKind = kind
+        pickAudio.launch(arrayOf("audio/*"))
+    }
+
+    private fun updatePlayer(name: String, f: (Player) -> Player) {
+        val l = Store.players(this)
+        val i = l.indexOfFirst { it.name == name }
+        if (i >= 0) { l[i] = f(l[i]); Store.savePlayers(this, l); refreshList() }
+    }
+
+    private fun showPlayerDialog(p: Player) {
+        val acts = ArrayList<Act>()
+        acts.add(Act("🎵 응원가 변경") { pickFor(p, "cheer") })
+        acts.add(Act("🎤 등장곡 변경") { pickFor(p, "walk") })
+        if (p.cheer != null) acts.add(Act("▶ 응원가 미리듣기") { preview(p.cheer) })
+        if (p.walk != null) acts.add(Act("▶ 등장곡 미리듣기") { preview(p.walk) })
+        if (p.walk != null) acts.add(Act("등장곡 지우기") { updatePlayer(p.name) { it.copy(walk = null) } })
+        acts.add(Act("✏️ 이름 바꾸기") { rename(p) })
+        acts.add(Act("🗑 선수 삭제") {
+            AlertDialog.Builder(this).setTitle("${p.name} 삭제")
+                .setMessage("이 선수의 응원가·등장곡 설정이 지워져요.")
+                .setPositiveButton("삭제") { _, _ ->
+                    val l = Store.players(this); l.removeAll { it.name == p.name }
+                    Store.savePlayers(this, l); refreshList()
+                }
+                .setNegativeButton("취소", null).show()
+        })
+        AlertDialog.Builder(this).setTitle(p.name)
+            .setItems(acts.map { it.label }.toTypedArray()) { _, i -> acts[i].run() }
+            .setNegativeButton("닫기", null).show()
+    }
+
+    private fun rename(p: Player) {
+        val et = edit("새 이름").apply { setText(p.name) }
+        val wrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0); addView(et)
+        }
+        AlertDialog.Builder(this).setTitle("이름 바꾸기").setView(wrap)
+            .setPositiveButton("확인") { _, _ ->
+                val n = et.text.toString().trim()
+                val l = Store.players(this)
+                when {
+                    n.isEmpty() -> {}
+                    l.any { it.name == n && it.name != p.name } -> toast("이미 있는 이름이에요")
+                    else -> { updatePlayer(p.name) { it.copy(name = n) } }
+                }
+            }
+            .setNegativeButton("취소", null).show()
+    }
+
+    // ── 미리듣기 ──
+    private fun preview(uri: String) {
+        stopPreview()
+        val mp = MediaPlayer()
+        try {
+            mp.setAudioAttributes(
+                AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build()
+            )
+            mp.setDataSource(this, Uri.parse(uri))
+            mp.prepare()
+            previewFx = Fx.attach(mp, Store.int(this, "reverb", 50))
+            mp.setOnCompletionListener { stopPreview() }
+            mp.start()
+        } catch (e: Exception) {
+            previewFx?.release(); previewFx = null
+            mp.release(); toast("재생할 수 없는 파일이에요"); return
+        }
+        previewPlayer = mp
+        toast("미리듣기 (20초 뒤 자동 정지)")
+        listBox.postDelayed({ if (previewPlayer === mp) stopPreview() }, 20000)
+    }
+
+    private fun stopPreview() {
+        previewPlayer?.runCatching { stop(); release() }
+        previewPlayer = null
+        previewFx?.release(); previewFx = null
+    }
+
+    // ── 목록 ──
     private fun refreshList() {
         listBox.removeAllViews()
         val players = Store.players(this)
@@ -252,6 +361,8 @@ class MainActivity : ComponentActivity() {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
                 setPadding(0, dp(12), 0, dp(12))
+                isClickable = true
+                setOnClickListener { showPlayerDialog(p) }
             }
             val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             left.addView(TextView(this).apply {
@@ -265,17 +376,14 @@ class MainActivity : ComponentActivity() {
             left.addView(chips)
             row.addView(left, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
             row.addView(TextView(this).apply {
-                text = "삭제"; textSize = 14f; setTextColor(cRed)
+                text = "수정 ›"; textSize = 14f; setTextColor(cPrimary)
                 setPadding(dp(12), dp(8), dp(4), dp(8))
-                setOnClickListener {
-                    val l = Store.players(this@MainActivity); l.removeAll { it.name == p.name }
-                    Store.savePlayers(this@MainActivity, l); refreshList()
-                }
             })
             listBox.addView(row)
         }
     }
 
+    // ── 실행 ──
     private fun onToggle() {
         if (CheerService.running) {
             startService(Intent(this, CheerService::class.java).setAction(CheerService.ACTION_STOP))

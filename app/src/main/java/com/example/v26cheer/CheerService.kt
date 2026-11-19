@@ -46,6 +46,7 @@ class CheerService : Service() {
     private lateinit var handler: Handler
     private var player: MediaPlayer? = null
     private var limitRunnable: Runnable? = null
+    private var fx: Fx.Handle? = null
 
     // 상태
     private var pbStable = false      // PLAY BALL 버튼이 보이는 상태
@@ -326,8 +327,10 @@ class CheerService : Service() {
                     .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build()
             )
             mp.setDataSource(this, Uri.parse(uri))
-            mp.prepare(); mp.start()
-        } catch (e: Exception) { mp.release(); return }
+            mp.prepare()
+            fx = Fx.attach(mp, Store.int(this, "reverb", 50))
+            mp.start()
+        } catch (e: Exception) { fx?.release(); fx = null; mp.release(); return }
         player = mp
         if (limitSec > 0) {
             val r = Runnable { if (player === mp) stopPlayer() }
@@ -341,6 +344,7 @@ class CheerService : Service() {
         limitRunnable = null
         player?.runCatching { stop(); release() }
         player = null
+        fx?.release(); fx = null
     }
 
     // ───────────────────────── 알림 ─────────────────────────
