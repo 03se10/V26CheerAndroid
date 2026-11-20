@@ -9,8 +9,6 @@ import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
-import android.media.AudioAttributes
-import android.media.MediaPlayer
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Bundle
@@ -42,8 +40,7 @@ class MainActivity : ComponentActivity() {
     private var pendingKind = "cheer"     // "cheer" 또는 "walk"
     private var pendingName: String? = null  // 기존 선수 수정 중이면 그 선수 이름
 
-    private var previewPlayer: MediaPlayer? = null
-    private var previewFx: Fx.Handle? = null
+    private var previewPlayer: StadiumPlayer? = null
 
     private class Act(val label: String, val run: () -> Unit)
 
@@ -203,8 +200,10 @@ class MainActivity : ComponentActivity() {
         c3.addView(slider("sec", 120, 25) { if (it == 0) "끝까지 재생" else "${it}초" })
         c3.addView(label("구장 울림 효과", 16))
         c3.addView(slider("reverb", 100, 50) { if (it == 0) "끄기" else "$it%" })
+        c3.addView(label("끝날 때 페이드아웃", 16))
+        c3.addView(slider("fade", 5, 2) { if (it == 0) "끄기" else "${it}초" })
         c3.addView(TextView(this).apply {
-            text = "응원가와 등장곡이 넓은 야구장에서 울리는 것처럼 들려요. 기기에 따라 효과가 약하거나 없을 수 있어요."
+            text = "컴프야 구장 응원처럼 소리가 넓은 야구장에서 울려요. 기기와 상관없이 동작하고, 클수록 더 크게 울려요."
             textSize = 12f; setTextColor(cSub); setPadding(0, dp(8), 0, 0)
         })
         root.addView(c3)
@@ -318,30 +317,18 @@ class MainActivity : ComponentActivity() {
     // ── 미리듣기 ──
     private fun preview(uri: String) {
         stopPreview()
-        val mp = MediaPlayer()
-        try {
-            mp.setAudioAttributes(
-                AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build()
-            )
-            mp.setDataSource(this, Uri.parse(uri))
-            mp.prepare()
-            previewFx = Fx.attach(mp, Store.int(this, "reverb", 50))
-            mp.setOnCompletionListener { stopPreview() }
-            mp.start()
-        } catch (e: Exception) {
-            previewFx?.release(); previewFx = null
-            mp.release(); toast("재생할 수 없는 파일이에요"); return
-        }
-        previewPlayer = mp
-        toast("미리듣기 (20초 뒤 자동 정지)")
-        listBox.postDelayed({ if (previewPlayer === mp) stopPreview() }, 20000)
+        val p = StadiumPlayer(this, Uri.parse(uri), Store.int(this, "reverb", 50))
+        previewPlayer = p
+        p.start()
+        toast("미리듣기 (20초 뒤 자동으로 줄어들며 멈춰요)")
+        listBox.postDelayed({
+            if (previewPlayer === p) { p.fadeOutAndStop(1500); previewPlayer = null }
+        }, 20000)
     }
 
     private fun stopPreview() {
-        previewPlayer?.runCatching { stop(); release() }
+        previewPlayer?.fadeOutAndStop(300)
         previewPlayer = null
-        previewFx?.release(); previewFx = null
     }
 
     // ── 목록 ──

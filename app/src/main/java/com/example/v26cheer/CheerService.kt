@@ -9,9 +9,7 @@ import android.graphics.Color
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
-import android.media.AudioAttributes
 import android.media.ImageReader
-import android.media.MediaPlayer
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
@@ -44,9 +42,9 @@ class CheerService : Service() {
     private var curH = 0
     private lateinit var thread: HandlerThread
     private lateinit var handler: Handler
-    private var player: MediaPlayer? = null
+    private var player: StadiumPlayer? = null
+    private val all = java.util.concurrent.CopyOnWriteArrayList<StadiumPlayer>()
     private var limitRunnable: Runnable? = null
-    private var fx: Fx.Handle? = null
 
     // 상태
     private var pbStable = false      // PLAY BALL 버튼이 보이는 상태
@@ -175,7 +173,7 @@ class CheerService : Service() {
                     play(p.cheer, Store.int(this, "sec", 25))
                     dbgMsg = "▶ ${p.name} 응원가"
                 } else {
-                    stopPlayer(); dbgMsg = "${p.name}: 응원가 없음"
+                    stopPlayer(transitionFade()); dbgMsg = "${p.name}: 응원가 없음"
                 }
             }
         }
@@ -205,7 +203,7 @@ class CheerService : Service() {
         busy = false
         if (!teamOk) {
             identified = true
-            if (current != null) { stopPlayer(); current = null; phase = Phase.IDLE }
+            if (current != null) { stopPlayer(transitionFade()); current = null; phase = Phase.IDLE }
             dbgMsg = "상대팀 공격 – 대기"
             refresh(); return
         }
@@ -213,7 +211,7 @@ class CheerService : Service() {
         if (p != null) {
             identified = true; idFails = 0
             if (p.name != current?.name) {
-                stopPlayer()
+                stopPlayer(transitionFade())
                 current = p
                 if (p.walk != null) {
                     phase = Phase.WALKUP
@@ -226,7 +224,7 @@ class CheerService : Service() {
             } else dbgMsg = "${p.name} 인식"
         } else if (++idFails >= 3) {
             identified = true; idFails = 0
-            stopPlayer(); current = null; phase = Phase.IDLE
+            stopPlayer(transitionFade()); current = null; phase = Phase.IDLE
             dbgMsg = "등록되지 않은 타자"
         }
         refresh()
@@ -319,32 +317,32 @@ class CheerService : Service() {
     // ───────────────────────── 재생 ─────────────────────────
 
     private fun play(uri: String, limitSec: Int) {
-        stopPlayer()
-        val mp = MediaPlayer()
-        try {
-            mp.setAudioAttributes(
-                AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build()
-            )
-            mp.setDataSource(this, Uri.parse(uri))
-            mp.prepare()
-            fx = Fx.attach(mp, Store.int(this, "reverb", 50))
-            mp.start()
-        } catch (e: Exception) { fx?.release(); fx = null; mp.release(); return }
-        player = mp
+        stopPlayer(transitionFade())   // 이전 곡은 서서히 줄이고, 새 곡은 바로 시작 → 자연스럽게 이어짐
+        val p = StadiumPlayer(this, Uri.parse(uri), Store.int(this, "reverb", 50)) { done ->
+            all.remove(done)
+            handler.post { if (player === done) player = null }
+        }
+        all.add(p)
+        player = p
+        p.start()
         if (limitSec > 0) {
-            val r = Runnable { if (player === mp) stopPlayer() }
+            val total = limitSec * 1000L
+            val fadeLen = minOf(Store.int(this, "fade", 2) * 1000L, total / 2).toInt()
+            val r = Runnable { if (player === p) stopPlayer(fadeLen) }
             limitRunnable = r
-            handler.postDelayed(r, limitSec * 1000L)
+            handler.postDelayed(r, total - fadeLen)   // 전체 길이는 그대로, 끝부분에서 서서히 줄임
         }
     }
 
-    private fun stopPlayer() {
+    /** 곡이 바뀔 때 쓰는 짧은 페이드. 페이드를 끄면 즉시 정지 */
+    private fun transitionFade(): Int = if (Store.int(this, "fade", 2) > 0) 700 else 0
+
+    private fun stopPlayer(fadeMs: Int = 0) {
         limitRunnable?.let { handler.removeCallbacks(it) }
         limitRunnable = null
-        player?.runCatching { stop(); release() }
+        val p = player ?: return
         player = null
-        fx?.release(); fx = null
+        if (fadeMs > 0) p.fadeOutAndStop(fadeMs) else p.stopNow()
     }
 
     // ───────────────────────── 알림 ─────────────────────────
@@ -384,7 +382,8 @@ class CheerService : Service() {
     override fun onDestroy() {
         running = false
         if (::handler.isInitialized) handler.removeCallbacksAndMessages(null)
-        stopPlayer()
+        stopPlayer(0)
+        all.forEach { it.stopNow() }
         vd?.release(); reader?.close(); projection?.stop()
         if (::thread.isInitialized) thread.quitSafely()
         super.onDestroy()
