@@ -51,6 +51,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var liveText: TextView
     private lateinit var rootFrame: FrameLayout
     private lateinit var calibStatus: TextView
+    private lateinit var orderBox: LinearLayout
+    private lateinit var orderStatus: TextView
     private var editorLayer: View? = null
     private val backCb = object : OnBackPressedCallback(false) {
         override fun handleOnBackPressed() { closeEditor() }
@@ -61,6 +63,7 @@ class MainActivity : ComponentActivity() {
         override fun run() {
             liveText.text = Live.text.ifEmpty { if (CheerService.running) "준비 중…" else "실행 전이에요. ▶ 시작을 눌러주세요." }
             updateToggle()
+            refreshOrderStatus()
             ui.postDelayed(this, 1000)
         }
     }
@@ -354,6 +357,7 @@ class MainActivity : ComponentActivity() {
         listBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = lp(4) }
         c2.addView(listBox)
         col.addView(c2)
+        col.addView(buildOrderCard())
     }
 
     private fun pickNew(kind: String) {
@@ -418,6 +422,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun refreshList() {
+        refreshOrder()
         listBox.removeAllViews()
         val players = Store.players(this)
         if (players.isEmpty()) {
@@ -453,6 +458,77 @@ class MainActivity : ComponentActivity() {
             })
             listBox.addView(row)
         }
+    }
+
+    // ═════════════════════ 타순 ═════════════════════
+    private fun buildOrderCard(): LinearLayout {
+        val c = card()
+        c.addView(title("타순", "아웃(삼진 포함)이 나오면 타순의 다음 타자 등장곡으로 바로 넘어가요."))
+        c.addView(Switch(this).apply {
+            text = "타순 기능 사용"; textSize = 15f
+            isChecked = Store.bool(this@MainActivity, "orderOn", false)
+            setOnCheckedChangeListener { _, on -> Store.putBool(this@MainActivity, "orderOn", on) }
+            layoutParams = lp(10)
+        })
+        c.addView(note("홈 탭에 내 팀 이름을 꼭 입력해 주세요. 상대 팀의 아웃은 무시해요. 타순 기능을 켜면 선수 소개바 인식은 쓰지 않아요.", 6))
+        orderStatus = TextView(this).apply {
+            textSize = 15f; setTypeface(typeface, Typeface.BOLD); setTextColor(cAccent); layoutParams = lp(12)
+        }
+        c.addView(orderStatus)
+        val ctl = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutParams = lp(8) }
+        ctl.addView(btn("◀ 이전 타자", cPrimary, false).apply { setOnClickListener { moveOrder(-1) } },
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(4) })
+        ctl.addView(btn("다음 타자 ▶", cPrimary, true).apply { setOnClickListener { moveOrder(1) } },
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(4) })
+        c.addView(ctl)
+        orderBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = lp(12) }
+        c.addView(orderBox)
+        c.addView(note("PLAY BALL 때 타자 이름이 읽히면 타순 위치가 자동으로 맞춰져요. 주자 아웃·교체 등으로 어긋나면 ◀ ▶로 고치거나, 알림창의 ⏭ 다음 타자 버튼을 쓰세요.", 10))
+        return c
+    }
+
+    private fun refreshOrder() {
+        if (!::orderBox.isInitialized) return
+        orderBox.removeAllViews()
+        val names = listOf("(등록 안 한 선수)") + Store.players(this).map { it.name }
+        val order = Store.order(this)
+        for (i in 0 until 9) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; layoutParams = lp(4)
+            }
+            row.addView(TextView(this).apply { text = "${i + 1}번"; textSize = 14f; setTextColor(cText) },
+                LinearLayout.LayoutParams(dp(44), LinearLayout.LayoutParams.WRAP_CONTENT))
+            val sp = Spinner(this).apply {
+                adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, names)
+                setSelection(maxOf(0, names.indexOf(order[i])))
+                onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                    override fun onItemSelected(parent: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                        val nm = if (pos == 0) "" else names[pos]
+                        val cur = Store.order(this@MainActivity)
+                        if (cur[i] != nm) { cur[i] = nm; Store.saveOrder(this@MainActivity, cur); refreshOrderStatus() }
+                    }
+                    override fun onNothingSelected(parent: AdapterView<*>?) {}
+                }
+            }
+            row.addView(sp, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            orderBox.addView(row)
+        }
+        refreshOrderStatus()
+    }
+
+    private fun refreshOrderStatus() {
+        if (!::orderStatus.isInitialized) return
+        val order = Store.order(this)
+        val idx = Store.int(this, "orderIdx", 0).coerceIn(0, order.size - 1)
+        val name = order[idx].ifEmpty { "(등록 안 한 선수)" }
+        orderStatus.text = "지금 타석: ${idx + 1}번  $name"
+    }
+
+    private fun moveOrder(delta: Int) {
+        val n = 9
+        val idx = ((Store.int(this, "orderIdx", 0) + delta) % n + n) % n
+        Store.putInt(this, "orderIdx", idx)
+        refreshOrderStatus()
     }
 
     // ═════════════════════ 팀응원가 ═════════════════════
@@ -693,7 +769,7 @@ class MainActivity : ComponentActivity() {
             setOnClickListener { captureGame() }
         })
         c.addView(note("① 아래 ▶ 시작  ② 이 버튼  ③ 8초 안에 컴프야로 이동 (PLAY BALL이 보이는 화면). 삐 소리가 나면 저장된 거예요. 알림창의 \"📸 화면 저장\" 버튼으로도 할 수 있어요.", 8))
-        c.addView(note("PLAY BALL 화면과 선수 소개바 화면은 따로 캡처해서, 각 화면에 보이는 영역만 지정하세요. 지정하지 않은 영역은 이전 설정이 유지돼요. 폰의 스크린샷도 쓸 수 있어요.", 6))
+        c.addView(note("PLAY BALL 화면, 선수 소개바 화면, 아웃 배너(위·가운데) 화면은 따로 캡처해서, 각 화면에 보이는 영역만 지정하세요. 지정하지 않은 영역은 이전 설정이 유지돼요. 폰의 스크린샷도 쓸 수 있어요.", 6))
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutParams = lp(12) }
         row.addView(btn("🖼 스크린샷 불러오기", cPrimary, false).apply { setOnClickListener { pickImage.launch("image/*") } },
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(4) })
@@ -783,10 +859,13 @@ class MainActivity : ComponentActivity() {
         val ih = bmp.height.toFloat()
         val ev = RegionEditorView(this)
         ev.setImage(bmp)
-        val defaults = listOf(Regions.D_BATTER, Regions.D_PB, Regions.D_SCORE, Regions.D_INNING, Regions.D_COMMENT, Regions.D_INTRO)
+        val defaults = listOf(
+            Regions.D_BATTER, Regions.D_PB, Regions.D_SCORE, Regions.D_INNING,
+            Regions.D_COMMENT, Regions.D_INTRO, Regions.D_RTOP, Regions.D_RMID
+        )
         val init = Regions.initialBoxes(this, bmp.width, bmp.height)
         fun boxToRect(b: FloatArray) = RectF(b[0] * iw, b[1] * ih, (b[0] + b[2]) * iw, (b[1] + b[3]) * ih)
-        for (i in 0 until 6) ev.rects[i] = boxToRect(init[i])
+        for (i in 0 until 8) ev.rects[i] = boxToRect(init[i])
 
         val hints = arrayOf(
             "타자 카드에서 선수 이름 글자만 감싸세요. (PLAY BALL 화면에서, 예: 허인서'26)",
@@ -794,13 +873,15 @@ class MainActivity : ComponentActivity() {
             "왼쪽 노란 막대가 보이는 쪽부터 두 팀 이름까지, 두 줄 전체를 감싸세요.",
             "이닝 숫자와 그 아래 ▲▼ 표시를 감싸세요.",
             "화면 아래 해설 글자 줄을 감싸세요. (예: 8회 말. …)",
-            "화면 아래 선수 소개바에서 번호와 이름 글자를 감싸세요. (소개바가 보이는 화면에서)"
+            "화면 아래 선수 소개바에서 번호와 이름 글자를 감싸세요. (소개바가 보이는 화면에서)",
+            "삼진(STRIKE OUT) 등 결과 배너가 화면 위쪽에 뜬 화면에서, 그 배너 전체를 감싸세요.",
+            "OUT 결과 배너가 화면 가운데에 뜬 화면에서, 그 배너 전체를 감싸세요."
         )
         val stepTv = TextView(this).apply { textSize = 16f; setTypeface(typeface, Typeface.BOLD); setTextColor(cPrimary) }
         val hintTv = TextView(this).apply { textSize = 12.5f; setTextColor(cSub); setPadding(0, dp(2), 0, 0) }
         fun update() {
             val i = ev.selected
-            stepTv.text = "${i + 1}/6  ${RegionEditorView.NAMES[i]}"
+            stepTv.text = "${i + 1}/8  ${RegionEditorView.NAMES[i]}"
             hintTv.text = hints[i] + "\n한 손가락: 박스 그리기 · 두 손가락: 확대/이동 (작은 글자는 확대해서 그리세요)\n이 화면에 없는 영역은 건너뛰세요 (이전 설정이 유지돼요)"
         }
 
@@ -822,7 +903,7 @@ class MainActivity : ComponentActivity() {
             minHeight = dp(40); minimumHeight = dp(40)
             setOnClickListener {
                 val boxes = ArrayList<FloatArray>()
-                for (i in 0 until 6) {
+                for (i in 0 until 8) {
                     val r = ev.rects[i] ?: boxToRect(defaults[i])
                     boxes.add(floatArrayOf(r.left / iw, r.top / ih, r.width() / iw, r.height() / ih))
                 }
@@ -852,7 +933,7 @@ class MainActivity : ComponentActivity() {
             setOnClickListener { ev.rects[ev.selected] = boxToRect(defaults[ev.selected]); ev.invalidate() }
         }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(4); rightMargin = dp(4) })
         bottom.addView(btn("다음 ▶", cPrimary, true).apply {
-            setOnClickListener { if (ev.selected < 5) { ev.selected += 1; update() } }
+            setOnClickListener { if (ev.selected < 7) { ev.selected += 1; update() } }
         }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(4) })
 
         val layer = LinearLayout(this).apply {
