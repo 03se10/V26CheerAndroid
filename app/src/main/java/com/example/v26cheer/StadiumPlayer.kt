@@ -22,6 +22,7 @@ class StadiumPlayer(
     private val ctx: Context,
     private val uri: Uri,
     private val strengthPct: Int,
+    private val loop: Boolean = false,   // true면 곡이 끝나도 처음부터 다시 재생
     private val onEnd: (StadiumPlayer) -> Unit = {}
 ) {
     @Volatile private var hardStop = false
@@ -43,6 +44,8 @@ class StadiumPlayer(
     private var fadeTotal = 0L
     private var fadeLeft = 0L
     private var fadeDone = false
+    private var producedFrames = 0L     // 지금까지 내보낸 프레임 수
+    private var loopStartFrames = 0L    // 현재 반복 구간이 시작된 시점
 
     fun start() {
         thread = Thread({ runSafely() }, "stadium-player").also { it.start() }
@@ -109,7 +112,16 @@ class StadiumPlayer(
                         }
                     }
                     codec.releaseOutputBuffer(ob, false)
-                    if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) outputDone = true
+                    if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                        val longEnough = producedFrames - loopStartFrames > sr / 2   // 너무 짧은 파일은 반복하지 않음
+                        if (loop && longEnough && !hardStop && !fadeDone && fadeReqMs == 0) {
+                            // 처음으로 되감아서 이어서 재생 (울림 꼬리는 그대로 이어짐)
+                            codec.flush()
+                            extractor.seekTo(0L, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+                            inputDone = false
+                            loopStartFrames = producedFrames
+                        } else outputDone = true
+                    }
                 }
             }
 
@@ -202,6 +214,7 @@ class StadiumPlayer(
                 r[i] = if (ch >= 2) sb.get(i * ch + 1) / 32768f else a
             }
         }
+        producedFrames += frames
         emit(frames)
     }
 

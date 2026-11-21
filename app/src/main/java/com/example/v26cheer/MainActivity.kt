@@ -717,9 +717,16 @@ class MainActivity : ComponentActivity() {
         col.addView(pageTitle("🔊 소리", "울림과 페이드를 맞춰요"))
 
         val c = card()
-        c.addView(title("선수 응원가 재생 시간"))
-        c.addView(slider("sec", 120, 25) { if (it == 0) "끝까지 재생" else "${it}초" })
-        c.addView(note("PLAY BALL이 사라진 뒤 선수 응원가가 나오는 길이예요."))
+        c.addView(title("선수 응원가"))
+        c.addView(Switch(this).apply {
+            text = "곡이 끝나면 다시 반복 재생"; textSize = 15f
+            isChecked = Store.bool(this@MainActivity, "loop", true)
+            setOnCheckedChangeListener { _, on -> Store.putBool(this@MainActivity, "loop", on) }
+            layoutParams = lp(10)
+        })
+        c.addView(label2("응원가 재생 시간", 16))
+        c.addView(slider("sec", 120, 0) { if (it == 0) "타석이 끝날 때까지" else "${it}초" })
+        c.addView(note("PLAY BALL이 사라진 뒤 선수 응원가가 나오는 시간이에요. 반복 재생을 켜고 \"타석이 끝날 때까지\"로 두면 타석이 길어져도 계속 나와요. (다음 타자·아웃·공수교대 때 서서히 줄며 멈추고, 최대 8분)"))
         col.addView(c)
 
         val c2 = card()
@@ -733,6 +740,10 @@ class MainActivity : ComponentActivity() {
         c3.addView(slider("fade", 5, 2) { if (it == 0) "끄기" else "${it}초" })
         c3.addView(note("재생 시간이 끝나기 전에 소리가 서서히 줄어들어요. 곡이 바뀔 때도 앞 곡이 부드럽게 줄어들며 이어져요."))
         col.addView(c3)
+    }
+
+    private fun label2(t: String, top: Int = 12) = TextView(this).apply {
+        text = t; textSize = 13f; setTextColor(cSub); layoutParams = lp(top)
     }
 
     private fun slider(key: String, max: Int, def: Int, fmt: (Int) -> String): View {

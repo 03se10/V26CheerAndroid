@@ -265,7 +265,7 @@ class CheerService : Service() {
                     stopPlayer(transitionFade())
                     dbgMsg = "팀응원가 재생 중 – ${p.name} 응원가 건너뜀"
                 } else if (p.cheer != null) {
-                    play(p.cheer, Store.int(this, "sec", 25))
+                    play(p.cheer, Store.int(this, "sec", 0), Store.bool(this, "loop", true))
                     dbgMsg = "▶ ${p.name} 응원가"
                 } else {
                     stopPlayer(transitionFade()); dbgMsg = "${p.name}: 응원가 없음"
@@ -451,7 +451,11 @@ class CheerService : Service() {
     }
 
     private fun onOffenseChanged(row: Int) {
-        if (!orderOn()) return
+        if (!orderOn()) {
+            // 공수교대: 이전 타자의 (반복 중일 수 있는) 응원가는 서서히 정리
+            stopPlayer(transitionFade()); current = null; phase = Phase.IDLE
+            return
+        }
         cancelWalk()
         val my = Store.str(this, "team").trim()
         val mine = rowMine[row] ?: my.isEmpty()
@@ -825,9 +829,9 @@ class CheerService : Service() {
 
     // ───────────────────────── 재생 ─────────────────────────
 
-    private fun play(uri: String, limitSec: Int) {
+    private fun play(uri: String, limitSec: Int, loop: Boolean = false) {
         stopPlayer(transitionFade())   // 이전 곡은 서서히 줄이고, 새 곡은 바로 시작 → 자연스럽게 이어짐
-        val p = StadiumPlayer(this, Uri.parse(uri), Store.int(this, "reverb", 50)) { done ->
+        val p = StadiumPlayer(this, Uri.parse(uri), Store.int(this, "reverb", 50), loop) { done ->
             all.remove(done)
             handler.post { if (player === done) player = null }
         }
@@ -840,6 +844,11 @@ class CheerService : Service() {
             val r = Runnable { if (player === p) stopPlayer(fadeLen) }
             limitRunnable = r
             handler.postDelayed(r, total - fadeLen)   // 전체 길이는 그대로, 끝부분에서 서서히 줄임
+        } else if (loop) {
+            // 반복 재생 + 시간 제한 없음: 타석이 끝나면 다음 타자/공수교대에서 정리되고, 혹시 모를 상황 대비 8분 상한
+            val r = Runnable { if (player === p) stopPlayer(Store.int(this, "fade", 2) * 1000) }
+            limitRunnable = r
+            handler.postDelayed(r, 8 * 60 * 1000L)
         }
     }
 
