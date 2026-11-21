@@ -16,6 +16,7 @@ import android.net.Uri
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
+import android.os.SystemClock
 import android.util.DisplayMetrics
 import android.view.Display
 import androidx.core.app.NotificationCompat
@@ -30,6 +31,7 @@ class CheerService : Service() {
         const val ACTION_STOP = "stop"
         const val CH = "cheer"
         const val SCAN_MS = 500L
+        const val INNING_MS = 1200L
         var running = false
     }
 
@@ -42,11 +44,14 @@ class CheerService : Service() {
     private var curH = 0
     private lateinit var thread: HandlerThread
     private lateinit var handler: Handler
-    private var player: StadiumPlayer? = null
+
+    // 재생기
+    private var player: StadiumPlayer? = null        // 선수 응원가/등장곡
+    private var teamPlayer: StadiumPlayer? = null    // 팀 응원가
     private val all = java.util.concurrent.CopyOnWriteArrayList<StadiumPlayer>()
     private var limitRunnable: Runnable? = null
 
-    // 상태
+    // 선수 응원가 상태
     private var pbStable = false      // PLAY BALL 버튼이 보이는 상태
     private var flipCount = 0
     private var identified = false    // 이번 PLAY BALL 구간에서 타자 인식 완료
@@ -55,9 +60,22 @@ class CheerService : Service() {
     private var current: Player? = null
     private var phase = Phase.IDLE
 
-    // 알림 표시용
+    // 이닝 / 팀 응원가 상태
+    private var lastInningAt = 0L
+    private var inningBusy = false
+    private var wantComment = 0       // 해설 바("1회 말")를 읽어볼 남은 횟수
+    private var candKey = 0
+    private var candCount = 0
+    private var stableKey = 0
+    private var inning = 0
+    private var half = 0              // 1=초, 2=말
+    private val rowMine = arrayOfNulls<Boolean>(3)   // [1]=위 줄, [2]=아래 줄 팀이 내 팀인지
+    private val rowMineAt = LongArray(3)
+
+    // 알림/홈 화면 표시용
     private var dbgOff = "-"
     private var dbgBatter = "-"
+    private var dbgInning = "-"
     private var dbgMsg = "대기 중"
     private var lastShown = ""
 
@@ -158,18 +176,29 @@ class CheerService : Service() {
             busy = true
             identify(myTeam, teamBmp, batterBw, batterRaw)
         } else refresh()
+
+        // 이닝 인식 (팀 응원가용)
+        maybeSampleInning(f, off)
     }
+
+    // ───────────────────────── PLAY BALL / 선수 응원가 ─────────────────────────
+
+    private fun teamActive(): Boolean = teamPlayer?.finished == false
 
     private fun onPlayBallChanged(visible: Boolean) {
         if (visible) {
             identified = false; idFails = 0
+            wantComment = 3
             dbgMsg = "PLAY BALL 감지"
         } else {
             // PLAY BALL 사라짐 → 응원가
             val p = current
             if (p != null && phase != Phase.CHEER) {
                 phase = Phase.CHEER
-                if (p.cheer != null) {
+                if (teamActive()) {
+                    stopPlayer(transitionFade())
+                    dbgMsg = "팀응원가 재생 중 – ${p.name} 응원가 건너뜀"
+                } else if (p.cheer != null) {
                     play(p.cheer, Store.int(this, "sec", 25))
                     dbgMsg = "▶ ${p.name} 응원가"
                 } else {
@@ -213,13 +242,13 @@ class CheerService : Service() {
             if (p.name != current?.name) {
                 stopPlayer(transitionFade())
                 current = p
-                if (p.walk != null) {
+                if (p.walk != null && !teamActive()) {
                     phase = Phase.WALKUP
                     play(p.walk, 60)
                     dbgMsg = "♬ ${p.name} 등장곡"
                 } else {
                     phase = Phase.IDLE
-                    dbgMsg = "${p.name} 인식 (등장곡 없음)"
+                    dbgMsg = if (teamActive()) "팀응원가 재생 중 – ${p.name} 대기" else "${p.name} 인식 (등장곡 없음)"
                 }
             } else dbgMsg = "${p.name} 인식"
         } else if (++idFails >= 3) {
@@ -228,6 +257,179 @@ class CheerService : Service() {
             dbgMsg = "등록되지 않은 타자"
         }
         refresh()
+    }
+
+    // ───────────────────────── 이닝 인식 / 팀 응원가 ─────────────────────────
+
+    private fun teamFeatureOn(): Boolean =
+        Store.bool(this, "teamOn", true) && Store.teamSongs(this).any { it.enabled && it.uri != null }
+
+    private fun maybeSampleInning(f: Bitmap, off: Int) {
+        if (inningBusy) return
+        val now = SystemClock.elapsedRealtime()
+        val wantC = wantComment > 0 && pbStable
+        if (now - lastInningAt < (if (wantC) 600L else INNING_MS)) return
+        lastInningAt = now
+        if (!teamFeatureOn()) return
+
+        val numBmp = binarize(crop(f, Regions.INNING_NUM), 6)
+        val cBw = if (wantC) binarize(crop(f, Regions.COMMENT), 3) else null
+        val cRaw = if (wantC) upscale(crop(f, Regions.COMMENT), 2) else null
+        val myTeam = Store.str(this, "team").trim()
+        val needTeam = off != 0 && myTeam.isNotEmpty() &&
+            (rowMine[off] == null || now - rowMineAt[off] > 20000L)
+        val teamBmp = if (needTeam)
+            binarize(crop(f, if (off == 1) Regions.TEAM_TOP else Regions.TEAM_BOT), 5) else null
+        val halfNow = if (off != 0) off else triangleHalf(f)
+
+        inningBusy = true
+        sampleInning(numBmp, cBw, cRaw, teamBmp, halfNow, off)
+    }
+
+    private fun sampleInning(numBmp: Bitmap, cBw: Bitmap?, cRaw: Bitmap?, teamBmp: Bitmap?, halfNow: Int, row: Int) {
+        fun finish() { inningBusy = false; refresh() }
+
+        fun readInning() {
+            if (cBw == null || cRaw == null) {
+                ocr(numBmp) { t -> feed(parseInning(t), halfNow, false); finish() }
+                return
+            }
+            ocr(cBw) { t1 ->
+                val c1 = parseComment(t1)
+                if (c1 != null) { wantComment = 0; feed(c1.first, c1.second, true); finish() }
+                else ocr(cRaw) { t2 ->
+                    val c2 = parseComment(t2)
+                    if (c2 != null) { wantComment = 0; feed(c2.first, c2.second, true) }
+                    else {
+                        wantComment--
+                        ocr(numBmp) { t3 -> feed(parseInning(t3), halfNow, false); finish() }
+                        return@ocr
+                    }
+                    finish()
+                }
+            }
+        }
+
+        if (teamBmp != null && row in 1..2) {
+            ocr(teamBmp) { tt ->
+                val my = Matcher.norm(Store.str(this, "team"))
+                val t = Matcher.norm(tt)
+                if (t.isNotEmpty() && my.isNotEmpty()) {
+                    rowMine[row] = t.contains(my)
+                    rowMineAt[row] = SystemClock.elapsedRealtime()
+                }
+                readInning()
+            }
+        } else readInning()
+    }
+
+    /** 읽은 이닝을 반영. 같은 값이 2번 연속 읽히면 확정(해설 바에서 읽은 값은 바로 확정). */
+    private fun feed(inn: Int, h: Int, strong: Boolean) {
+        if (inn <= 0 || inn > 15 || h == 0) return
+        val key = inn * 10 + h
+        if (strong) { candKey = key; candCount = 2 }
+        else if (key == candKey) candCount++
+        else { candKey = key; candCount = 1 }
+        if (candCount >= 2 && key != stableKey) {
+            val first = stableKey == 0
+            stableKey = key; inning = inn; half = h
+            dbgInning = "${inn}회${if (h == 1) "초" else "말"}"
+            // 앱을 이닝 중간에 켠 경우(첫 인식)에는 해설 바로 확인된 때만 재생
+            if (!first || strong) onInningChanged(inn, h)
+        }
+    }
+
+    private fun onInningChanged(inn: Int, h: Int) {
+        if (!Store.bool(this, "teamOn", true)) return
+        val mine = rowMine[h]
+        val match = Store.teamSongs(this).firstOrNull { ts ->
+            ts.enabled && ts.uri != null &&
+                inningOk(ts, inn) &&
+                (ts.half == 0 || ts.half == h) &&
+                sideOk(ts.side, mine)
+        }
+        if (match != null) playTeam(match)
+        else dbgMsg = "${inn}회${if (h == 1) "초" else "말"} 시작 – 해당하는 팀응원가 없음"
+    }
+
+    private fun inningOk(ts: TeamSong, inn: Int): Boolean = when {
+        ts.inning == 0 -> true
+        ts.orMore -> inn >= ts.inning
+        else -> inn == ts.inning
+    }
+
+    /** side: 0 상관없음, 1 내 팀 공격 때, 2 내 팀 수비 때. mine = 지금 공격팀이 내 팀인지(모르면 null) */
+    private fun sideOk(side: Int, mine: Boolean?): Boolean = when (side) {
+        1 -> mine == true
+        2 -> mine == false
+        else -> true
+    }
+
+    private fun playTeam(ts: TeamSong) {
+        val uri = ts.uri ?: return
+        // 팀 응원가가 나오는 동안 선수 응원가/등장곡은 멈추고 나오지 않는다
+        stopPlayer(transitionFade())
+        current = null
+        phase = Phase.IDLE
+        teamPlayer?.let { if (!it.finished) it.fadeOutAndStop(transitionFade()) }
+
+        val p = StadiumPlayer(this, Uri.parse(uri), Store.int(this, "reverb", 50)) { done -> all.remove(done) }
+        all.add(p)
+        teamPlayer = p
+        p.start()
+        if (ts.sec > 0) {
+            val total = ts.sec * 1000L
+            val fadeLen = minOf(Store.int(this, "fade", 2) * 1000L, total / 2).toInt()
+            handler.postDelayed({ if (teamPlayer === p) p.fadeOutAndStop(fadeLen) }, total - fadeLen)
+        }
+        dbgMsg = "📣 팀응원가: ${ts.name}"
+        refresh()
+    }
+
+    private fun parseComment(t: String): Pair<Int, Int>? {
+        val m = Regex("(\\d{1,2})\\s*회\\s*(초|말)").find(t) ?: return null
+        val n = m.groupValues[1].toIntOrNull() ?: return null
+        return Pair(n, if (m.groupValues[2] == "초") 1 else 2)
+    }
+
+    /** 이닝 숫자 OCR 결과 보정 (숫자로 오인되기 쉬운 글자를 바로잡음) */
+    private fun parseInning(t: String): Int {
+        val sb = StringBuilder()
+        for (c in t) {
+            when (c) {
+                in '0'..'9' -> sb.append(c)
+                'l', 'I', '|', 'i', '!' -> sb.append('1')
+                'O', 'o', 'D' -> sb.append('0')
+                'S', 's' -> sb.append('5')
+                'B' -> sb.append('8')
+                'g', 'q' -> sb.append('9')
+                'Z', 'z' -> sb.append('2')
+            }
+        }
+        return sb.toString().take(2).toIntOrNull() ?: 0
+    }
+
+    /** ▲(초)=1, ▼(말)=2, 모르면 0 */
+    private fun triangleHalf(b: Bitmap): Int {
+        val q = rect(b, Regions.INNING_TRI)
+        val rows = IntArray(q[3])
+        for (y in 0 until q[3]) {
+            for (x in 0 until q[2]) {
+                val c = b.getPixel(q[0] + x, q[1] + y)
+                if (minOf(Color.red(c), Color.green(c), Color.blue(c)) > 120) rows[y]++
+            }
+        }
+        var first = -1; var last = -1
+        for (y in rows.indices) if (rows[y] > 0) { if (first < 0) first = y; last = y }
+        if (first < 0 || last - first < 3) return 0
+        val mid = (first + last) / 2
+        var top = 0; var bottom = 0
+        for (y in first..last) if (y <= mid) top += rows[y] else bottom += rows[y]
+        return when {
+            top > bottom * 1.3 -> 2      // ▼ = 말
+            bottom > top * 1.3 -> 1      // ▲ = 초
+            else -> 0
+        }
     }
 
     // ───────────────────────── 이미지 처리 ─────────────────────────
@@ -287,7 +489,7 @@ class CheerService : Service() {
         return hit.toFloat() / q[3]
     }
 
-    /** 흰 글자만 남기고(검정 글씨/흰 배경) 확대 — 복잡한 배경 위 이름 인식용 */
+    /** 흰 글자만 남기고(검정 글씨/흰 배경) 확대 — 복잡한 배경 위 글자 인식용 */
     private fun binarize(src: Bitmap, scale: Int): Bitmap {
         val w = src.width; val h = src.height
         val px = IntArray(w * h); src.getPixels(px, 0, w, 0, 0, w, h)
@@ -348,7 +550,8 @@ class CheerService : Service() {
     // ───────────────────────── 알림 ─────────────────────────
 
     private fun refresh() {
-        val msg = "PB ${if (pbStable) "●" else "○"} | 공격:$dbgOff | 타자:$dbgBatter | $dbgMsg"
+        val msg = "PB ${if (pbStable) "●" else "○"} | 이닝:$dbgInning | 공격:$dbgOff | 타자:$dbgBatter | $dbgMsg"
+        Live.text = msg
         if (msg == lastShown) return
         lastShown = msg
         getSystemService(NotificationManager::class.java).notify(1, notif(msg))
@@ -381,6 +584,7 @@ class CheerService : Service() {
 
     override fun onDestroy() {
         running = false
+        Live.text = ""
         if (::handler.isInitialized) handler.removeCallbacksAndMessages(null)
         stopPlayer(0)
         all.forEach { it.stopNow() }

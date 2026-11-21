@@ -26,6 +26,9 @@ class StadiumPlayer(
 ) {
     @Volatile private var hardStop = false
     @Volatile private var fadeReqMs = 0
+    /** 재생이 완전히 끝났는지(페이드 중에는 false) */
+    @Volatile var finished = false
+        private set
     private var thread: Thread? = null
 
     private var sr = 44100
@@ -136,6 +139,7 @@ class StadiumPlayer(
                 } catch (e: Exception) {}
                 try { t.release() } catch (e: Exception) {}
             }
+            finished = true
             try { onEnd(this) } catch (e: Exception) {}
         }
     }

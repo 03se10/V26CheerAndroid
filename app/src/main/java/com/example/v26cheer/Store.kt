@@ -7,9 +7,32 @@ import org.json.JSONObject
 /** 선수 한 명: 응원가(필수), 등장곡(선택) */
 data class Player(val name: String, val cheer: String?, val walk: String?)
 
+/**
+ * 팀 응원가. 이닝에 맞춰 자동 재생.
+ * inning: 0=아무 이닝, 1~12 / orMore: 그 이닝 이후 매 이닝 / half: 0 상관없음, 1 초, 2 말
+ * side: 0 상관없음, 1 내 팀 공격 때, 2 내 팀 수비 때 / sec: 0=끝까지
+ */
+data class TeamSong(
+    val id: Long,
+    val name: String,
+    val uri: String?,
+    val enabled: Boolean,
+    val inning: Int,
+    val orMore: Boolean,
+    val half: Int,
+    val side: Int,
+    val sec: Int
+)
+
+/** 서비스가 홈 화면에 보여줄 실시간 상태 */
+object Live {
+    @Volatile var text: String = ""
+}
+
 object Store {
     private fun p(c: Context) = c.getSharedPreferences("cfg", Context.MODE_PRIVATE)
 
+    // ── 선수 ──
     fun players(c: Context): MutableList<Player> {
         val sp = p(c)
         val raw = sp.getString("players", null)
@@ -42,10 +65,44 @@ object Store {
         p(c).edit().putString("players", arr.toString()).apply()
     }
 
+    // ── 팀 응원가 ──
+    fun teamSongs(c: Context): MutableList<TeamSong> {
+        val arr = JSONArray(p(c).getString("teamSongs", "[]"))
+        return MutableList(arr.length()) {
+            val o = arr.getJSONObject(it)
+            TeamSong(
+                o.optLong("id", it.toLong()),
+                o.optString("name", "팀 응원가"),
+                o.optString("uri").ifEmpty { null },
+                o.optBoolean("enabled", true),
+                o.optInt("inning", 8),
+                o.optBoolean("orMore", false),
+                o.optInt("half", 0),
+                o.optInt("side", 0),
+                o.optInt("sec", 40)
+            )
+        }
+    }
+
+    fun saveTeamSongs(c: Context, list: List<TeamSong>) {
+        val arr = JSONArray()
+        list.forEach {
+            arr.put(
+                JSONObject().put("id", it.id).put("name", it.name).put("uri", it.uri ?: "")
+                    .put("enabled", it.enabled).put("inning", it.inning).put("orMore", it.orMore)
+                    .put("half", it.half).put("side", it.side).put("sec", it.sec)
+            )
+        }
+        p(c).edit().putString("teamSongs", arr.toString()).apply()
+    }
+
+    // ── 기본 설정 ──
     fun int(c: Context, key: String, def: Int) = p(c).getInt(key, def)
     fun putInt(c: Context, key: String, v: Int) = p(c).edit().putInt(key, v).apply()
     fun str(c: Context, key: String, def: String = "") = p(c).getString(key, def) ?: def
     fun putStr(c: Context, key: String, v: String) = p(c).edit().putString(key, v).apply()
+    fun bool(c: Context, key: String, def: Boolean) = p(c).getBoolean(key, def)
+    fun putBool(c: Context, key: String, v: Boolean) = p(c).edit().putBoolean(key, v).apply()
 }
 
 /**
@@ -59,6 +116,9 @@ object Regions {
     val YEL_BOT = floatArrayOf(0.040f, 0.044f, 0.022f, 0.034f)   // 아래쪽 팀 노란 막대
     val TEAM_TOP = floatArrayOf(0.122f, 0.014f, 0.06f, 0.020f)   // 위쪽 팀 이름
     val TEAM_BOT = floatArrayOf(0.122f, 0.049f, 0.06f, 0.020f)   // 아래쪽 팀 이름
+    val INNING_NUM = floatArrayOf(0.004f, 0.027f, 0.046f, 0.028f) // 이닝 숫자
+    val INNING_TRI = floatArrayOf(0.011f, 0.052f, 0.030f, 0.018f) // 초/말 삼각형(▲▼)
+    val COMMENT = floatArrayOf(0.07f, 0.965f, 0.89f, 0.026f)     // 하단 해설 바 ("1회 말. …")
 }
 
 object Matcher {
