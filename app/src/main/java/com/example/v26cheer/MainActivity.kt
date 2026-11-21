@@ -6,7 +6,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.media.projection.MediaProjectionManager
@@ -20,6 +23,7 @@ import android.view.Gravity
 import android.view.View
 import android.widget.*
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.WindowCompat
 
@@ -45,6 +49,12 @@ class MainActivity : ComponentActivity() {
     private lateinit var toggle: Button
     private lateinit var statusPill: TextView
     private lateinit var liveText: TextView
+    private lateinit var rootFrame: FrameLayout
+    private lateinit var calibStatus: TextView
+    private var editorLayer: View? = null
+    private val backCb = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() { closeEditor() }
+    }
 
     private val ui = Handler(Looper.getMainLooper())
     private val poll = object : Runnable {
@@ -113,6 +123,14 @@ class MainActivity : ComponentActivity() {
                 .putExtra("data", r.data)
             startForegroundService(i)
             toggle.postDelayed({ updateToggle() }, 500)
+        }
+    }
+
+    private val pickImage = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) {
+            val bmp = loadBitmap(uri)
+            if (bmp == null) toast("이미지를 열 수 없어요")
+            else { saveCalibImage(bmp); openEditor(bmp) }
         }
     }
 
@@ -226,7 +244,9 @@ class MainActivity : ComponentActivity() {
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(cBg) }
         root.addView(content, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         root.addView(nav, lp())
-        setContentView(root)
+        rootFrame = FrameLayout(this).apply { addView(root, FrameLayout.LayoutParams(-1, -1)) }
+        setContentView(rootFrame)
+        onBackPressedDispatcher.addCallback(this, backCb)
 
         runCatching {
             window.statusBarColor = cBg
@@ -242,7 +262,7 @@ class MainActivity : ComponentActivity() {
         updateToggle()
     }
 
-    override fun onResume() { super.onResume(); ui.post(poll) }
+    override fun onResume() { super.onResume(); ui.post(poll); refreshCalib() }
     override fun onPause() { ui.removeCallbacks(poll); stopPreview(); super.onPause() }
 
     private fun showTab(i: Int) {
@@ -283,6 +303,7 @@ class MainActivity : ComponentActivity() {
             })
         })
         col.addView(c1)
+        col.addView(buildCalibCard())
 
         val c2 = card()
         c2.addView(title("실행"))
@@ -307,6 +328,7 @@ class MainActivity : ComponentActivity() {
 
         val c4 = card()
         c4.addView(title("사용 순서"))
+        c4.addView(note("0. 홈의 '화면 영역 설정'에서 내 화면에 맞게 위치를 한 번 지정해요.", 10))
         c4.addView(note("1. 라인업 탭에서 선수 이름과 응원가·등장곡을 등록해요.", 10))
         c4.addView(note("2. 팀응원가 탭에서 이닝별 팀 응원가를 등록하고 조건을 정해요.", 4))
         c4.addView(note("3. 소리 탭에서 구장 울림과 페이드를 맞춰요.", 4))
@@ -656,6 +678,191 @@ class MainActivity : ComponentActivity() {
         }
         box.addView(tv); box.addView(sb)
         return box
+    }
+
+    // ═════════════════════ 화면 영역 설정 ═════════════════════
+    private fun buildCalibCard(): LinearLayout {
+        val c = card()
+        c.addView(title("화면 영역 설정", "내 폰 화면에서 타자 이름·PLAY BALL·이닝 위치를 직접 지정해요. 한 번 지정하면 계속 저장돼요."))
+        calibStatus = TextView(this).apply {
+            textSize = 13f; setTextColor(cText); setPadding(0, dp(10), 0, 0)
+        }
+        c.addView(calibStatus, lp())
+        c.addView(btn("📸 게임 화면 캡처 (8초 뒤)", cPrimary, true).apply {
+            layoutParams = lp(12)
+            setOnClickListener { captureGame() }
+        })
+        c.addView(note("① 아래 ▶ 시작  ② 이 버튼  ③ 8초 안에 컴프야로 이동 (PLAY BALL이 보이는 화면). 삐 소리가 나면 저장된 거예요. 알림창의 \"📸 화면 저장\" 버튼으로도 할 수 있어요.", 8))
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutParams = lp(12) }
+        row.addView(btn("🖼 스크린샷 불러오기", cPrimary, false).apply { setOnClickListener { pickImage.launch("image/*") } },
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(4) })
+        row.addView(btn("✏️ 영역 지정", cPrimary, false).apply { setOnClickListener { editSaved() } },
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(4) })
+        c.addView(row)
+        c.addView(btn("기본값으로 되돌리기", cRed, false).apply {
+            layoutParams = lp(8)
+            setOnClickListener {
+                AlertDialog.Builder(this@MainActivity).setTitle("기본값으로 되돌릴까요?")
+                    .setMessage("저장한 영역 설정이 지워져요.")
+                    .setPositiveButton("되돌리기") { _, _ -> Regions.clear(this@MainActivity); refreshCalib() }
+                    .setNegativeButton("취소", null).show()
+            }
+        })
+        return c
+    }
+
+    private fun refreshCalib() {
+        if (!::calibStatus.isInitialized) return
+        val saved = Regions.savedSize(this)
+        val cur = windowManager.maximumWindowMetrics.bounds
+        calibStatus.text = when {
+            saved == null -> "기본값 사용 중 (720×1280 화면 기준)\n화면이 다르면 아래에서 내 화면에 맞춰 주세요."
+            Math.abs(saved.first.toDouble() * cur.height() - cur.width().toDouble() * saved.second) /
+                (saved.first.toDouble() * cur.height()) > 0.03 ->
+                "⚠ 저장된 화면(${saved.first}×${saved.second})과 지금 화면 비율이 달라요. 다시 지정해 주세요."
+            else -> "✓ 내 화면에 맞춰 저장됨 (${saved.first}×${saved.second})"
+        }
+    }
+
+    private fun captureGame() {
+        if (!CheerService.running) { toast("먼저 아래 ▶ 시작을 눌러주세요"); return }
+        startService(
+            Intent(this, CheerService::class.java).setAction(CheerService.ACTION_SHOT).putExtra("delay", 8000)
+        )
+        toast("8초 안에 컴프야 화면으로 이동하세요 (PLAY BALL이 보이는 화면)")
+    }
+
+    private fun editSaved() {
+        val f = java.io.File(filesDir, "calib.png")
+        val bmp = if (f.exists()) BitmapFactory.decodeFile(f.absolutePath) else null
+        if (bmp == null) toast("먼저 게임 화면을 캡처하거나 스크린샷을 불러오세요")
+        else openEditor(bmp)
+    }
+
+    private fun loadBitmap(uri: Uri): Bitmap? = try {
+        contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+    } catch (e: Exception) { null }
+
+    private fun saveCalibImage(bmp: Bitmap) {
+        runCatching {
+            java.io.File(filesDir, "calib.png").outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        }
+    }
+
+    private fun purpleBase(b: Bitmap, r: RectF): Float {
+        val x0 = r.left.toInt().coerceIn(0, b.width - 1)
+        val x1 = r.right.toInt().coerceIn(x0 + 1, b.width)
+        val y0 = r.top.toInt().coerceIn(0, b.height - 1)
+        val y1 = r.bottom.toInt().coerceIn(y0 + 1, b.height)
+        var tot = 0; var cnt = 0
+        var y = y0
+        while (y < y1) {
+            var x = x0
+            while (x < x1) {
+                val c = b.getPixel(x, y)
+                val rr = Color.red(c); val g = Color.green(c); val bl = Color.blue(c)
+                tot++
+                if (bl > 150 && rr in 71..189 && g < 80 && bl - g > 120) cnt++
+                x += 2
+            }
+            y += 2
+        }
+        return if (tot == 0) 0f else cnt.toFloat() / tot
+    }
+
+    private fun closeEditor() {
+        editorLayer?.let { rootFrame.removeView(it) }
+        editorLayer = null
+        backCb.isEnabled = false
+    }
+
+    private fun openEditor(bmp: Bitmap) {
+        closeEditor()
+        val iw = bmp.width.toFloat()
+        val ih = bmp.height.toFloat()
+        val ev = RegionEditorView(this)
+        ev.setImage(bmp)
+        val defaults = listOf(Regions.D_BATTER, Regions.D_PB, Regions.D_SCORE, Regions.D_INNING, Regions.D_COMMENT)
+        val init = Regions.initialBoxes(this, bmp.width, bmp.height)
+        fun boxToRect(b: FloatArray) = RectF(b[0] * iw, b[1] * ih, (b[0] + b[2]) * iw, (b[1] + b[3]) * ih)
+        for (i in 0 until 5) ev.rects[i] = boxToRect(init[i])
+
+        val hints = arrayOf(
+            "타자 카드에서 선수 이름 글자만 감싸세요. (예: 허인서'26)",
+            "보라색 PLAY BALL 버튼 전체를 감싸세요. 버튼이 보이는 화면이어야 해요.",
+            "왼쪽 노란 막대가 보이는 쪽부터 두 팀 이름까지, 두 줄 전체를 감싸세요.",
+            "이닝 숫자와 그 아래 ▲▼ 표시를 감싸세요.",
+            "화면 아래 해설 글자 줄을 감싸세요. (예: 8회 말. …)"
+        )
+        val stepTv = TextView(this).apply { textSize = 16f; setTypeface(typeface, Typeface.BOLD); setTextColor(cPrimary) }
+        val hintTv = TextView(this).apply { textSize = 12.5f; setTextColor(cSub); setPadding(0, dp(2), 0, 0) }
+        fun update() {
+            val i = ev.selected
+            stepTv.text = "${i + 1}/5  ${RegionEditorView.NAMES[i]}"
+            hintTv.text = hints[i] + "\n한 손가락: 박스 그리기 · 두 손가락: 확대/이동 (작은 글자는 확대해서 그리세요)"
+        }
+
+        val top = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.WHITE)
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+        }
+        val topRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        topRow.addView(btn("취소", cSub, false).apply {
+            minHeight = dp(40); minimumHeight = dp(40)
+            setOnClickListener { closeEditor() }
+        })
+        topRow.addView(TextView(this).apply {
+            text = "영역 지정"; textSize = 17f; gravity = Gravity.CENTER
+            setTypeface(typeface, Typeface.BOLD); setTextColor(cText)
+        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        topRow.addView(btn("저장", cPrimary, true).apply {
+            minHeight = dp(40); minimumHeight = dp(40)
+            setOnClickListener {
+                val boxes = ArrayList<FloatArray>()
+                for (i in 0 until 5) {
+                    val r = ev.rects[i] ?: boxToRect(defaults[i])
+                    boxes.add(floatArrayOf(r.left / iw, r.top / ih, r.width() / iw, r.height() / ih))
+                }
+                val base = purpleBase(bmp, ev.rects[1] ?: boxToRect(defaults[1]))
+                if (base < 0.1f) toast("PLAY BALL 버튼이 보라색으로 보이지 않아요. 버튼이 보이는 화면인지 확인해 주세요")
+                else toast("저장됐어요 (${bmp.width}×${bmp.height})")
+                Regions.save(this@MainActivity, bmp.width, bmp.height, boxes, base)
+                refreshCalib()
+                closeEditor()
+            }
+        })
+        top.addView(topRow)
+        top.addView(stepTv, lp(8))
+        top.addView(hintTv)
+
+        val bottom = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(Color.WHITE)
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+        }
+        bottom.addView(btn("◀ 이전", cPrimary, false).apply {
+            setOnClickListener { if (ev.selected > 0) { ev.selected -= 1; update() } }
+        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(4) })
+        bottom.addView(btn("↺ 기본 위치", cPrimary, false).apply {
+            setOnClickListener { ev.rects[ev.selected] = boxToRect(defaults[ev.selected]); ev.invalidate() }
+        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(4); rightMargin = dp(4) })
+        bottom.addView(btn("다음 ▶", cPrimary, true).apply {
+            setOnClickListener { if (ev.selected < 4) { ev.selected += 1; update() } }
+        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(4) })
+
+        val layer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.BLACK)
+            isClickable = true
+        }
+        layer.addView(top, lp())
+        layer.addView(ev, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        layer.addView(bottom, lp())
+        rootFrame.addView(layer, FrameLayout.LayoutParams(-1, -1))
+        editorLayer = layer
+        backCb.isEnabled = true
+        update()
     }
 
     // ── 미리듣기 ──

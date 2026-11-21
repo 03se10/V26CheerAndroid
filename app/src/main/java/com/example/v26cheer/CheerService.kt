@@ -9,7 +9,9 @@ import android.graphics.Color
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
+import android.media.AudioManager
 import android.media.ImageReader
+import android.media.ToneGenerator
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
@@ -29,6 +31,7 @@ class CheerService : Service() {
     companion object {
         const val ACTION_START = "start"
         const val ACTION_STOP = "stop"
+        const val ACTION_SHOT = "shot"   // 영역 지정용 화면 저장
         const val CH = "cheer"
         const val SCAN_MS = 500L
         const val INNING_MS = 1200L
@@ -63,6 +66,8 @@ class CheerService : Service() {
     // 이닝 / 팀 응원가 상태
     private var lastInningAt = 0L
     private var inningBusy = false
+    @Volatile private var shotAt = 0L          // 이 시각이 되면 화면을 저장
+    private var regionsVer = -1
     private var wantComment = 0       // 해설 바("1회 말")를 읽어볼 남은 횟수
     private var candKey = 0
     private var candCount = 0
@@ -87,8 +92,18 @@ class CheerService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) { stopSelf(); return START_NOT_STICKY }
+        if (intent?.action == ACTION_SHOT) {
+            if (running) {
+                val delay = intent?.getIntExtra("delay", 4000) ?: 4000
+                shotAt = SystemClock.elapsedRealtime() + delay
+                dbgMsg = "📸 ${delay / 1000}초 뒤 화면 저장 – 알림창을 닫고 게임 화면을 보여주세요"
+                refresh()
+            }
+            return START_NOT_STICKY
+        }
         if (running) return START_NOT_STICKY
 
+        Regions.load(this)
         createChannel()
         startForeground(1, notif("PLAY BALL 화면을 기다리는 중…"))
 
@@ -154,11 +169,32 @@ class CheerService : Service() {
             } else raw
         } finally { img.close() }
 
-        try { process(frame) } finally { frame.recycle() }
+        try {
+            val ver = Store.int(this, "calibVer", 0)
+            if (ver != regionsVer) { Regions.load(this); regionsVer = ver }
+            if (shotAt != 0L && SystemClock.elapsedRealtime() >= shotAt) { shotAt = 0L; saveShot(frame) }
+            process(frame)
+        } finally { frame.recycle() }
+    }
+
+    /** 영역 지정용으로 지금 게임 화면을 저장 */
+    private fun saveShot(f: Bitmap) {
+        try {
+            java.io.File(filesDir, "calib.png").outputStream().use { f.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            runCatching {
+                val tg = ToneGenerator(AudioManager.STREAM_MUSIC, 80)
+                tg.startTone(ToneGenerator.TONE_PROP_BEEP, 200)
+                handler.postDelayed({ tg.release() }, 600)
+            }
+            dbgMsg = "📸 화면 저장됨 (${f.width}×${f.height}) – 앱에서 영역을 지정하세요"
+        } catch (e: Exception) {
+            dbgMsg = "화면 저장 실패"
+        }
+        refresh()
     }
 
     private fun process(f: Bitmap) {
-        val pbNow = purpleFraction(f) >= 0.35f
+        val pbNow = purpleFraction(f) >= Regions.pbThreshold
         val off = offenseRow(f)  // 0=없음, 1=위, 2=아래
         dbgOff = when (off) { 1 -> "위"; 2 -> "아래"; else -> "-" }
 
@@ -471,8 +507,8 @@ class CheerService : Service() {
         val top = yellowRows(b, Regions.YEL_TOP)
         val bot = yellowRows(b, Regions.YEL_BOT)
         return when {
-            top >= 0.6f && top >= bot -> 1
-            bot >= 0.6f -> 2
+            top >= 0.5f && top >= bot -> 1
+            bot >= 0.5f -> 2
             else -> 0
         }
     }
@@ -571,12 +607,17 @@ class CheerService : Service() {
         val open = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
         )
+        val shot = PendingIntent.getService(
+            this, 1, Intent(this, CheerService::class.java).setAction(ACTION_SHOT),
+            PendingIntent.FLAG_IMMUTABLE
+        )
         return NotificationCompat.Builder(this, CH)
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setContentTitle("V26 응원가 실행 중")
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setContentIntent(open)
+            .addAction(0, "📸 화면 저장", shot)
             .addAction(0, "중지", stop)
             .setOngoing(true)
             .build()
