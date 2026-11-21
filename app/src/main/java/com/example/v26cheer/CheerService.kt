@@ -66,6 +66,10 @@ class CheerService : Service() {
     // 이닝 / 팀 응원가 상태
     private var lastInningAt = 0L
     private var inningBusy = false
+    private var introBusy = false          // 선수 소개바 인식 중
+    private var lastIntroAt = 0L
+    private var introName: String? = null  // 지금 보이는 소개바의 선수 (없으면 null)
+    private var introMiss = 0
     @Volatile private var shotAt = 0L          // 이 시각이 되면 화면을 저장
     private var regionsVer = -1
     private var wantComment = 0       // 해설 바("1회 말")를 읽어볼 남은 횟수
@@ -215,6 +219,9 @@ class CheerService : Service() {
 
         // 이닝 인식 (팀 응원가용)
         maybeSampleInning(f, off)
+
+        // 선수 소개바 인식 (등장곡용)
+        maybeSampleIntro(f, off)
     }
 
     // ───────────────────────── PLAY BALL / 선수 응원가 ─────────────────────────
@@ -289,8 +296,68 @@ class CheerService : Service() {
             } else dbgMsg = "${p.name} 인식"
         } else if (++idFails >= 3) {
             identified = true; idFails = 0
-            stopPlayer(transitionFade()); current = null; phase = Phase.IDLE
-            dbgMsg = "등록되지 않은 타자"
+            // 소개바에서 이미 타자를 확인했다면 유지, 아니면 등록되지 않은 타자로 보고 정리
+            if (introName == null) {
+                stopPlayer(transitionFade()); current = null; phase = Phase.IDLE
+                dbgMsg = "등록되지 않은 타자"
+            }
+        }
+        refresh()
+    }
+
+    // ───────────────────────── 선수 소개바 → 등장곡 ─────────────────────────
+
+    private fun maybeSampleIntro(f: Bitmap, off: Int) {
+        if (introBusy) return
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastIntroAt < 700L) return
+        lastIntroAt = now
+        if (Store.players(this).none { it.walk != null }) return   // 등장곡이 하나도 없으면 읽을 필요 없음
+
+        val myTeam = Store.str(this, "team").trim()
+        val nameBmp = binarize(crop(f, Regions.INTRO), 2)
+        val teamBmp = if (off != 0 && myTeam.isNotEmpty())
+            binarize(crop(f, if (off == 1) Regions.TEAM_TOP else Regions.TEAM_BOT), 5) else null
+        introBusy = true
+        ocr(nameBmp) { t -> onIntroText(t, myTeam, teamBmp) }
+    }
+
+    private fun onIntroText(t: String, myTeam: String, teamBmp: Bitmap?) {
+        val p = Matcher.find(t, Store.players(this))
+        if (p == null) {
+            if (++introMiss >= 4) introName = null   // 소개바가 사라진 것으로 봄
+            introBusy = false
+            return
+        }
+        introMiss = 0
+        if (p.name == introName) { introBusy = false; return }   // 같은 소개바가 계속 보이는 중
+        if (teamBmp == null) { finishIntro(p, true); return }
+        ocr(teamBmp) { tt ->
+            val tn = Matcher.norm(tt)
+            // 팀 이름을 못 읽으면 막지 않고 진행, 읽었는데 내 팀이 아니면 상대 공격
+            finishIntro(p, tn.isEmpty() || tn.contains(Matcher.norm(myTeam)))
+        }
+    }
+
+    private fun finishIntro(p: Player, teamOk: Boolean) {
+        introBusy = false
+        introName = p.name
+        dbgBatter = p.name
+        if (!teamOk) {
+            if (current != null) { stopPlayer(transitionFade()); current = null; phase = Phase.IDLE }
+            dbgMsg = "상대팀 공격 – 대기"
+            refresh(); return
+        }
+        if (current?.name == p.name) { refresh(); return }       // 이미 이 타자로 진행 중
+        stopPlayer(transitionFade())                             // 이전 타자 곡은 서서히 정리
+        current = p
+        if (p.walk != null && !teamActive()) {
+            phase = Phase.WALKUP
+            play(p.walk, 60)
+            dbgMsg = "♬ ${p.name} 등장곡 (선수 소개바)"
+        } else {
+            phase = Phase.IDLE
+            dbgMsg = if (teamActive()) "팀응원가 재생 중 – ${p.name} 대기" else "${p.name} 소개바 인식 (등장곡 없음)"
         }
         refresh()
     }

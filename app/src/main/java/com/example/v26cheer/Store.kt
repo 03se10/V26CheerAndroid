@@ -107,17 +107,19 @@ object Store {
 
 /**
  * 화면 영역 (좌, 위, 너비, 높이) — 화면 대비 비율.
- * 사용자가 직접 지정한 5개 박스(타자 이름 / PLAY BALL / 스코어보드 / 이닝 / 해설)를 저장해 두고,
+ * 사용자가 직접 지정한 6개 박스(타자 이름 / PLAY BALL / 스코어보드 / 이닝 / 해설 / 선수 소개바)를 저장해 두고,
  * 거기서 노란 막대·팀 이름·이닝 숫자·초말 삼각형 영역을 계산합니다.
- * 저장된 설정이 없으면 컴프야v26 세로 화면(720x1280) 기준 기본값을 씁니다.
+ * 저장된 설정이 없으면 기본값을 씁니다. (스코어보드·이닝·소개바는 1080x2340 폰 스크린샷에서 측정,
+ * 타자 이름·PLAY BALL·해설은 다른 스크린샷을 화면 너비 기준으로 환산한 추정값이라 직접 맞춰 주는 게 좋아요)
  */
 object Regions {
-    // 기본 박스 (720x1280 스크린샷 기준)
-    val D_BATTER = floatArrayOf(0.75f, 0.832f, 0.17f, 0.030f)
-    val D_PB = floatArrayOf(0.463f, 0.886f, 0.42f, 0.052f)
-    val D_SCORE = floatArrayOf(0.042f, 0.0117f, 0.14f, 0.0656f)    // 노란 막대 ~ 팀 이름, 두 줄 전체
-    val D_INNING = floatArrayOf(0.015f, 0.0328f, 0.026f, 0.0328f)  // 이닝 숫자 + ▲▼
-    val D_COMMENT = floatArrayOf(0.07f, 0.965f, 0.89f, 0.026f)     // 하단 해설 바
+    // 기본 박스
+    val D_BATTER = floatArrayOf(0.75f, 0.862f, 0.17f, 0.0244f)     // PLAY BALL 단계의 타자 카드 이름
+    val D_PB = floatArrayOf(0.463f, 0.906f, 0.42f, 0.0423f)        // PLAY BALL 버튼
+    val D_SCORE = floatArrayOf(0.05f, 0.0432f, 0.1583f, 0.0662f)   // 노란 막대 ~ 팀 이름, 두 줄 전체
+    val D_INNING = floatArrayOf(0.0185f, 0.0684f, 0.0259f, 0.0299f) // 이닝 숫자 + ▲▼
+    val D_COMMENT = floatArrayOf(0.07f, 0.9718f, 0.89f, 0.0205f)   // 하단 해설 바
+    val D_INTRO = floatArrayOf(0.25f, 0.8654f, 0.6296f, 0.0342f)   // 선수 소개바(번호·이름)
 
     // 계산된 영역 (서비스가 사용)
     @Volatile var BATTER: FloatArray = D_BATTER
@@ -129,11 +131,15 @@ object Regions {
     @Volatile var INNING_NUM: FloatArray = floatArrayOf()
     @Volatile var INNING_TRI: FloatArray = floatArrayOf()
     @Volatile var COMMENT: FloatArray = D_COMMENT
+    @Volatile var INTRO: FloatArray = D_INTRO
     @Volatile var pbThreshold = 0.35f
 
-    init { apply(D_BATTER, D_PB, D_SCORE, D_INNING, D_COMMENT, null) }
+    init { apply(D_BATTER, D_PB, D_SCORE, D_INNING, D_COMMENT, D_INTRO, null) }
 
-    fun apply(batter: FloatArray, pb: FloatArray, score: FloatArray, inning: FloatArray, comment: FloatArray, pbBase: Float?) {
+    fun apply(
+        batter: FloatArray, pb: FloatArray, score: FloatArray, inning: FloatArray,
+        comment: FloatArray, intro: FloatArray, pbBase: Float?
+    ) {
         BATTER = batter
         PLAYBALL = pb
         val hh = score[3] / 2f
@@ -144,6 +150,7 @@ object Regions {
         INNING_NUM = floatArrayOf(inning[0], inning[1], inning[2], inning[3] * 0.6f)
         INNING_TRI = floatArrayOf(inning[0], inning[1] + inning[3] * 0.6f, inning[2], inning[3] * 0.4f)
         COMMENT = comment
+        INTRO = intro
         pbThreshold = if (pbBase == null) 0.35f else (pbBase * 0.5f).coerceIn(0.08f, 0.35f)
     }
 
@@ -155,28 +162,41 @@ object Regions {
         return FloatArray(4) { a.getDouble(it).toFloat() }
     }
 
+    private fun applyDefaults() = apply(D_BATTER, D_PB, D_SCORE, D_INNING, D_COMMENT, D_INTRO, null)
+
     /** 저장된 설정을 읽어 적용 (없으면 기본값) */
     fun load(c: Context) {
         val raw = prefs(c).getString("calib", null)
-        if (raw == null) { apply(D_BATTER, D_PB, D_SCORE, D_INNING, D_COMMENT, null); return }
+        if (raw == null) { applyDefaults(); return }
         try {
             val o = JSONObject(raw)
             val pbBase = if (o.has("pbBase")) o.getDouble("pbBase").toFloat() else null
             apply(
                 arr(o, "batter", D_BATTER), arr(o, "pb", D_PB), arr(o, "score", D_SCORE),
-                arr(o, "inning", D_INNING), arr(o, "comment", D_COMMENT), pbBase
+                arr(o, "inning", D_INNING), arr(o, "comment", D_COMMENT), arr(o, "intro", D_INTRO), pbBase
             )
         } catch (e: Exception) {
-            apply(D_BATTER, D_PB, D_SCORE, D_INNING, D_COMMENT, null)
+            applyDefaults()
         }
     }
 
-    /** boxes: [타자, PLAY BALL, 스코어보드, 이닝, 해설] (화면 대비 비율) */
-    fun save(c: Context, w: Int, h: Int, boxes: List<FloatArray>, pbBase: Float) {
+    /** 이전에 저장한 PLAY BALL 버튼 색 기준값 (없으면 null) */
+    fun savedPbBase(c: Context): Float? {
+        val raw = prefs(c).getString("calib", null) ?: return null
+        return try { val o = JSONObject(raw); if (o.has("pbBase")) o.getDouble("pbBase").toFloat() else null } catch (e: Exception) { null }
+    }
+
+    /**
+     * boxes: [타자, PLAY BALL, 스코어보드, 이닝, 해설, 소개바] (화면 대비 비율)
+     * pbBase: 이번 화면에서 PLAY BALL 버튼이 보였을 때의 보라색 비율. 버튼이 안 보이는 화면이면 null → 이전 값 유지
+     */
+    fun save(c: Context, w: Int, h: Int, boxes: List<FloatArray>, pbBase: Float?) {
         fun ja(f: FloatArray) = JSONArray().apply { f.forEach { put(it.toDouble()) } }
-        val o = JSONObject().put("w", w).put("h", h).put("pbBase", pbBase.toDouble())
+        val base = pbBase ?: savedPbBase(c)
+        val o = JSONObject().put("w", w).put("h", h)
             .put("batter", ja(boxes[0])).put("pb", ja(boxes[1])).put("score", ja(boxes[2]))
-            .put("inning", ja(boxes[3])).put("comment", ja(boxes[4]))
+            .put("inning", ja(boxes[3])).put("comment", ja(boxes[4])).put("intro", ja(boxes[5]))
+        if (base != null) o.put("pbBase", base.toDouble())
         prefs(c).edit().putString("calib", o.toString())
             .putInt("calibVer", prefs(c).getInt("calibVer", 0) + 1).apply()
         load(c)
@@ -203,12 +223,12 @@ object Regions {
                 if (Math.abs(sw.toDouble() * h - w.toDouble() * sh) / (sw.toDouble() * h) < 0.03) {
                     return listOf(
                         arr(o, "batter", D_BATTER), arr(o, "pb", D_PB), arr(o, "score", D_SCORE),
-                        arr(o, "inning", D_INNING), arr(o, "comment", D_COMMENT)
+                        arr(o, "inning", D_INNING), arr(o, "comment", D_COMMENT), arr(o, "intro", D_INTRO)
                     )
                 }
             } catch (e: Exception) {}
         }
-        return listOf(D_BATTER, D_PB, D_SCORE, D_INNING, D_COMMENT)
+        return listOf(D_BATTER, D_PB, D_SCORE, D_INNING, D_COMMENT, D_INTRO)
     }
 }
 

@@ -693,6 +693,7 @@ class MainActivity : ComponentActivity() {
             setOnClickListener { captureGame() }
         })
         c.addView(note("① 아래 ▶ 시작  ② 이 버튼  ③ 8초 안에 컴프야로 이동 (PLAY BALL이 보이는 화면). 삐 소리가 나면 저장된 거예요. 알림창의 \"📸 화면 저장\" 버튼으로도 할 수 있어요.", 8))
+        c.addView(note("PLAY BALL 화면과 선수 소개바 화면은 따로 캡처해서, 각 화면에 보이는 영역만 지정하세요. 지정하지 않은 영역은 이전 설정이 유지돼요. 폰의 스크린샷도 쓸 수 있어요.", 6))
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutParams = lp(12) }
         row.addView(btn("🖼 스크린샷 불러오기", cPrimary, false).apply { setOnClickListener { pickImage.launch("image/*") } },
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(4) })
@@ -782,24 +783,25 @@ class MainActivity : ComponentActivity() {
         val ih = bmp.height.toFloat()
         val ev = RegionEditorView(this)
         ev.setImage(bmp)
-        val defaults = listOf(Regions.D_BATTER, Regions.D_PB, Regions.D_SCORE, Regions.D_INNING, Regions.D_COMMENT)
+        val defaults = listOf(Regions.D_BATTER, Regions.D_PB, Regions.D_SCORE, Regions.D_INNING, Regions.D_COMMENT, Regions.D_INTRO)
         val init = Regions.initialBoxes(this, bmp.width, bmp.height)
         fun boxToRect(b: FloatArray) = RectF(b[0] * iw, b[1] * ih, (b[0] + b[2]) * iw, (b[1] + b[3]) * ih)
-        for (i in 0 until 5) ev.rects[i] = boxToRect(init[i])
+        for (i in 0 until 6) ev.rects[i] = boxToRect(init[i])
 
         val hints = arrayOf(
-            "타자 카드에서 선수 이름 글자만 감싸세요. (예: 허인서'26)",
-            "보라색 PLAY BALL 버튼 전체를 감싸세요. 버튼이 보이는 화면이어야 해요.",
+            "타자 카드에서 선수 이름 글자만 감싸세요. (PLAY BALL 화면에서, 예: 허인서'26)",
+            "보라색 PLAY BALL 버튼 전체를 감싸세요. (PLAY BALL 화면에서)",
             "왼쪽 노란 막대가 보이는 쪽부터 두 팀 이름까지, 두 줄 전체를 감싸세요.",
             "이닝 숫자와 그 아래 ▲▼ 표시를 감싸세요.",
-            "화면 아래 해설 글자 줄을 감싸세요. (예: 8회 말. …)"
+            "화면 아래 해설 글자 줄을 감싸세요. (예: 8회 말. …)",
+            "화면 아래 선수 소개바에서 번호와 이름 글자를 감싸세요. (소개바가 보이는 화면에서)"
         )
         val stepTv = TextView(this).apply { textSize = 16f; setTypeface(typeface, Typeface.BOLD); setTextColor(cPrimary) }
         val hintTv = TextView(this).apply { textSize = 12.5f; setTextColor(cSub); setPadding(0, dp(2), 0, 0) }
         fun update() {
             val i = ev.selected
-            stepTv.text = "${i + 1}/5  ${RegionEditorView.NAMES[i]}"
-            hintTv.text = hints[i] + "\n한 손가락: 박스 그리기 · 두 손가락: 확대/이동 (작은 글자는 확대해서 그리세요)"
+            stepTv.text = "${i + 1}/6  ${RegionEditorView.NAMES[i]}"
+            hintTv.text = hints[i] + "\n한 손가락: 박스 그리기 · 두 손가락: 확대/이동 (작은 글자는 확대해서 그리세요)\n이 화면에 없는 영역은 건너뛰세요 (이전 설정이 유지돼요)"
         }
 
         val top = LinearLayout(this).apply {
@@ -820,14 +822,16 @@ class MainActivity : ComponentActivity() {
             minHeight = dp(40); minimumHeight = dp(40)
             setOnClickListener {
                 val boxes = ArrayList<FloatArray>()
-                for (i in 0 until 5) {
+                for (i in 0 until 6) {
                     val r = ev.rects[i] ?: boxToRect(defaults[i])
                     boxes.add(floatArrayOf(r.left / iw, r.top / ih, r.width() / iw, r.height() / ih))
                 }
                 val base = purpleBase(bmp, ev.rects[1] ?: boxToRect(defaults[1]))
-                if (base < 0.1f) toast("PLAY BALL 버튼이 보라색으로 보이지 않아요. 버튼이 보이는 화면인지 확인해 주세요")
+                val seen = base >= 0.1f   // 이 화면에 PLAY BALL 버튼이 보임
+                if (!seen && Regions.savedPbBase(this@MainActivity) == null)
+                    toast("저장됐어요. PLAY BALL 버튼이 안 보이는 화면이라 버튼 민감도는 기본값을 써요")
                 else toast("저장됐어요 (${bmp.width}×${bmp.height})")
-                Regions.save(this@MainActivity, bmp.width, bmp.height, boxes, base)
+                Regions.save(this@MainActivity, bmp.width, bmp.height, boxes, if (seen) base else null)
                 refreshCalib()
                 closeEditor()
             }
@@ -848,7 +852,7 @@ class MainActivity : ComponentActivity() {
             setOnClickListener { ev.rects[ev.selected] = boxToRect(defaults[ev.selected]); ev.invalidate() }
         }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(4); rightMargin = dp(4) })
         bottom.addView(btn("다음 ▶", cPrimary, true).apply {
-            setOnClickListener { if (ev.selected < 4) { ev.selected += 1; update() } }
+            setOnClickListener { if (ev.selected < 5) { ev.selected += 1; update() } }
         }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(4) })
 
         val layer = LinearLayout(this).apply {

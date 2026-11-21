@@ -19,15 +19,15 @@ import kotlin.math.min
 class RegionEditorView(ctx: Context) : View(ctx) {
 
     companion object {
-        val NAMES = arrayOf("타자 이름", "PLAY BALL", "스코어보드", "이닝", "하단 해설")
+        val NAMES = arrayOf("타자 이름", "PLAY BALL", "스코어보드", "이닝", "하단 해설", "선수 소개바")
         private val COLORS = intArrayOf(
             Color.parseColor("#EF4444"), Color.parseColor("#8B5CF6"), Color.parseColor("#F59E0B"),
-            Color.parseColor("#10B981"), Color.parseColor("#06B6D4")
+            Color.parseColor("#10B981"), Color.parseColor("#06B6D4"), Color.parseColor("#EC4899")
         )
     }
 
     private var bmp: Bitmap? = null
-    val rects = arrayOfNulls<RectF>(5)      // 이미지 좌표(px)
+    val rects = arrayOfNulls<RectF>(6)      // 이미지 좌표(px)
     var selected = 0
         set(v) { field = v; invalidate() }
     var onChange: (() -> Unit)? = null
