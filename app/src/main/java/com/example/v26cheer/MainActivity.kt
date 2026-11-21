@@ -470,7 +470,7 @@ class MainActivity : ComponentActivity() {
             setOnCheckedChangeListener { _, on -> Store.putBool(this@MainActivity, "orderOn", on) }
             layoutParams = lp(10)
         })
-        c.addView(note("홈 탭에 내 팀 이름을 꼭 입력해 주세요. 상대 팀의 아웃은 무시해요. 타순 기능을 켜면 선수 소개바 인식은 쓰지 않아요.", 6))
+        c.addView(note("홈 탭에 내 팀 이름을 꼭 입력해 주세요. 상대 팀의 아웃은 무시해요.", 6))
         orderStatus = TextView(this).apply {
             textSize = 15f; setTypeface(typeface, Typeface.BOLD); setTextColor(cAccent); layoutParams = lp(12)
         }
@@ -780,7 +780,7 @@ class MainActivity : ComponentActivity() {
             setOnClickListener { captureGame() }
         })
         c.addView(note("① 아래 ▶ 시작  ② 이 버튼  ③ 8초 안에 컴프야로 이동 (PLAY BALL이 보이는 화면). 삐 소리가 나면 저장된 거예요. 알림창의 \"📸 화면 저장\" 버튼으로도 할 수 있어요.", 8))
-        c.addView(note("PLAY BALL 화면, 선수 소개바 화면, 아웃 배너(위·가운데) 화면은 따로 캡처해서, 각 화면에 보이는 영역만 지정하세요. 지정하지 않은 영역은 이전 설정이 유지돼요. 폰의 스크린샷도 쓸 수 있어요.", 6))
+        c.addView(note("PLAY BALL 화면과 아웃 배너(위·가운데)가 뜬 화면은 따로 캡처해서, 각 화면에 보이는 영역만 지정하세요. 지정하지 않은 영역은 이전 설정이 유지돼요. 폰의 스크린샷도 쓸 수 있어요.", 6))
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutParams = lp(12) }
         row.addView(btn("🖼 스크린샷 불러오기", cPrimary, false).apply { setOnClickListener { pickImage.launch("image/*") } },
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(4) })
@@ -872,11 +872,11 @@ class MainActivity : ComponentActivity() {
         ev.setImage(bmp)
         val defaults = listOf(
             Regions.D_BATTER, Regions.D_PB, Regions.D_SCORE, Regions.D_INNING,
-            Regions.D_COMMENT, Regions.D_INTRO, Regions.D_RTOP, Regions.D_RMID
+            Regions.D_COMMENT, Regions.D_RTOP, Regions.D_RMID
         )
         val init = Regions.initialBoxes(this, bmp.width, bmp.height)
         fun boxToRect(b: FloatArray) = RectF(b[0] * iw, b[1] * ih, (b[0] + b[2]) * iw, (b[1] + b[3]) * ih)
-        for (i in 0 until 8) ev.rects[i] = boxToRect(init[i])
+        for (i in 0 until 7) ev.rects[i] = boxToRect(init[i])
 
         val hints = arrayOf(
             "타자 카드에서 선수 이름 글자만 감싸세요. (PLAY BALL 화면에서, 예: 허인서'26)",
@@ -884,7 +884,6 @@ class MainActivity : ComponentActivity() {
             "왼쪽 노란 막대가 보이는 쪽부터 두 팀 이름까지, 두 줄 전체를 감싸세요.",
             "이닝 숫자와 그 아래 ▲▼ 표시를 감싸세요.",
             "화면 아래 해설 글자 줄을 감싸세요. (예: 8회 말. …)",
-            "화면 아래 선수 소개바에서 번호와 이름 글자를 감싸세요. (소개바가 보이는 화면에서)",
             "삼진(STRIKE OUT) 등 결과 배너가 화면 위쪽에 뜬 화면에서, 그 배너 전체를 감싸세요.",
             "OUT 결과 배너가 화면 가운데에 뜬 화면에서, 그 배너 전체를 감싸세요."
         )
@@ -892,7 +891,7 @@ class MainActivity : ComponentActivity() {
         val hintTv = TextView(this).apply { textSize = 12.5f; setTextColor(cSub); setPadding(0, dp(2), 0, 0) }
         fun update() {
             val i = ev.selected
-            stepTv.text = "${i + 1}/8  ${RegionEditorView.NAMES[i]}"
+            stepTv.text = "${i + 1}/7  ${RegionEditorView.NAMES[i]}"
             hintTv.text = hints[i] + "\n한 손가락: 박스 그리기 · 두 손가락: 확대/이동 (작은 글자는 확대해서 그리세요)\n이 화면에 없는 영역은 건너뛰세요 (이전 설정이 유지돼요)"
         }
 
@@ -914,7 +913,7 @@ class MainActivity : ComponentActivity() {
             minHeight = dp(40); minimumHeight = dp(40)
             setOnClickListener {
                 val boxes = ArrayList<FloatArray>()
-                for (i in 0 until 8) {
+                for (i in 0 until 7) {
                     val r = ev.rects[i] ?: boxToRect(defaults[i])
                     boxes.add(floatArrayOf(r.left / iw, r.top / ih, r.width() / iw, r.height() / ih))
                 }
@@ -944,7 +943,7 @@ class MainActivity : ComponentActivity() {
             setOnClickListener { ev.rects[ev.selected] = boxToRect(defaults[ev.selected]); ev.invalidate() }
         }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(4); rightMargin = dp(4) })
         bottom.addView(btn("다음 ▶", cPrimary, true).apply {
-            setOnClickListener { if (ev.selected < 7) { ev.selected += 1; update() } }
+            setOnClickListener { if (ev.selected < 6) { ev.selected += 1; update() } }
         }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(4) })
 
         val layer = LinearLayout(this).apply {

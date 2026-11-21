@@ -68,10 +68,6 @@ class CheerService : Service() {
     // 이닝 / 팀 응원가 상태
     private var lastInningAt = 0L
     private var inningBusy = false
-    private var introBusy = false          // 선수 소개바 인식 중
-    private var lastIntroAt = 0L
-    private var introName: String? = null  // 지금 보이는 소개바의 선수 (없으면 null)
-    private var introMiss = 0
 
     // 타순 / 아웃 인식
     private var resultBusy = false
@@ -238,9 +234,6 @@ class CheerService : Service() {
         // 이닝 인식 (팀 응원가용)
         maybeSampleInning(f, off)
 
-        // 선수 소개바 인식 (등장곡용)
-        maybeSampleIntro(f, off)
-
         // 타순: 공격팀 변화 / 내 팀 확인 / 아웃 배너 인식
         trackOffense(off)
         updateMine(f, off)
@@ -320,254 +313,13 @@ class CheerService : Service() {
             } else dbgMsg = "${p.name} 인식"
         } else if (++idFails >= 3) {
             identified = true; idFails = 0
-            // 소개바에서 이미 타자를 확인했다면 유지, 아니면 등록되지 않은 타자로 보고 정리
-            if (introName == null) {
+            // 타순 기능을 쓰는 중이면 타순이 알려준 타자를 유지, 아니면 등록되지 않은 타자로 보고 정리
+            if (!orderOn()) {
                 stopPlayer(transitionFade()); current = null; phase = Phase.IDLE
                 dbgMsg = "등록되지 않은 타자"
             }
         }
         refresh()
-    }
-
-    // ───────────────────────── 선수 소개바 → 등장곡 ─────────────────────────
-
-    private fun maybeSampleIntro(f: Bitmap, off: Int) {
-        if (introBusy) return
-        if (orderOn()) return   // 타순 기능을 쓰면 소개바 인식은 필요 없음
-        val now = SystemClock.elapsedRealtime()
-        if (now - lastIntroAt < 700L) return
-        lastIntroAt = now
-        if (Store.players(this).none { it.walk != null }) return   // 등장곡이 하나도 없으면 읽을 필요 없음
-
-        val myTeam = Store.str(this, "team").trim()
-        val nameBmp = binarize(crop(f, Regions.INTRO), 2)
-        val teamBmp = if (off != 0 && myTeam.isNotEmpty())
-            binarize(crop(f, if (off == 1) Regions.TEAM_TOP else Regions.TEAM_BOT), 5) else null
-        introBusy = true
-        ocr(nameBmp) { t -> onIntroText(t, myTeam, teamBmp) }
-    }
-
-    private fun onIntroText(t: String, myTeam: String, teamBmp: Bitmap?) {
-        val p = Matcher.find(t, Store.players(this))
-        if (p == null) {
-            if (++introMiss >= 4) introName = null   // 소개바가 사라진 것으로 봄
-            introBusy = false
-            return
-        }
-        introMiss = 0
-        if (p.name == introName) { introBusy = false; return }   // 같은 소개바가 계속 보이는 중
-        if (teamBmp == null) { finishIntro(p, true); return }
-        ocr(teamBmp) { tt ->
-            val tn = Matcher.norm(tt)
-            // 팀 이름을 못 읽으면 막지 않고 진행, 읽었는데 내 팀이 아니면 상대 공격
-            finishIntro(p, tn.isEmpty() || tn.contains(Matcher.norm(myTeam)))
-        }
-    }
-
-    private fun finishIntro(p: Player, teamOk: Boolean) {
-        introBusy = false
-        introName = p.name
-        dbgBatter = p.name
-        syncOrder(p)
-        if (!teamOk) {
-            if (current != null) { stopPlayer(transitionFade()); current = null; phase = Phase.IDLE }
-            dbgMsg = "상대팀 공격 – 대기"
-            refresh(); return
-        }
-        if (current?.name == p.name) { refresh(); return }       // 이미 이 타자로 진행 중
-        stopPlayer(transitionFade())                             // 이전 타자 곡은 서서히 정리
-        current = p
-        if (p.walk != null && !teamActive()) {
-            phase = Phase.WALKUP
-            play(p.walk, 60)
-            dbgMsg = "♬ ${p.name} 등장곡 (선수 소개바)"
-        } else {
-            phase = Phase.IDLE
-            dbgMsg = if (teamActive()) "팀응원가 재생 중 – ${p.name} 대기" else "${p.name} 소개바 인식 (등장곡 없음)"
-        }
-        refresh()
-    }
-
-    // ───────────────────────── 타순: 아웃 → 다음 타자 등장곡 ─────────────────────────
-
-    private fun orderOn(): Boolean = Store.bool(this, "orderOn", false)
-
-    /** 타순 포인터가 가리키는 타자 (등록 안 한 선수면 null) */
-    private fun pointerPlayer(): Player? {
-        val order = Store.order(this)
-        val name = order[Store.int(this, "orderIdx", 0).coerceIn(0, order.size - 1)]
-        if (name.isEmpty()) return null
-        return Store.players(this).firstOrNull { it.name == name }
-    }
-
-    /** 타자 이름을 읽었을 때 타순 위치를 그 선수에 맞춤 */
-    private fun syncOrder(p: Player) {
-        if (!orderOn()) return
-        val i = Store.order(this).indexOf(p.name)
-        if (i >= 0) Store.putInt(this, "orderIdx", i)
-    }
-
-    private fun cancelWalk() {
-        walkRunnable?.let { handler.removeCallbacks(it) }
-        walkRunnable = null
-    }
-
-    /** 이전 곡은 서서히 줄이고, 해당 타자의 등장곡을 시작 */
-    private fun startWalk(p: Player?, why: String) {
-        stopPlayer(transitionFade())
-        current = p
-        phase = Phase.IDLE
-        if (p == null) { dbgMsg = "$why: 등록 안 한 선수 차례 – 대기"; refresh(); return }
-        dbgBatter = p.name
-        if (p.walk != null && !teamActive()) {
-            phase = Phase.WALKUP
-            play(p.walk, 60)
-            dbgMsg = "♬ ${p.name} 등장곡 ($why)"
-        } else {
-            dbgMsg = if (teamActive()) "팀응원가 재생 중 – ${p.name} 대기" else "${p.name} 차례 (등장곡 없음)"
-        }
-        refresh()
-    }
-
-    /** 알림의 '다음 타자' 버튼 */
-    private fun manualNext() {
-        val n = Store.order(this).size
-        val idx = (Store.int(this, "orderIdx", 0) + 1) % n
-        Store.putInt(this, "orderIdx", idx)
-        cancelWalk()
-        startWalk(pointerPlayer(), "수동 ${idx + 1}번")
-    }
-
-    /** 노란 막대(공격 줄)가 바뀌면 공수교대로 보고 처리 (2번 연속 같은 줄일 때 확정) */
-    private fun trackOffense(off: Int) {
-        if (off == 0) return
-        if (off == lastOffRow) { offCand = 0; offCandCount = 0; return }
-        if (off == offCand) offCandCount++ else { offCand = off; offCandCount = 1 }
-        if (offCandCount >= 2) {
-            val prev = lastOffRow
-            lastOffRow = off; offCand = 0; offCandCount = 0
-            if (prev != 0) onOffenseChanged(off)
-        }
-    }
-
-    private fun onOffenseChanged(row: Int) {
-        if (!orderOn()) {
-            // 공수교대: 이전 타자의 (반복 중일 수 있는) 응원가는 서서히 정리
-            stopPlayer(transitionFade()); current = null; phase = Phase.IDLE
-            return
-        }
-        cancelWalk()
-        val my = Store.str(this, "team").trim()
-        val mine = rowMine[row] ?: my.isEmpty()
-        if (mine) {
-            startWalk(pointerPlayer(), "공격 시작")      // 우리 공격 시작: 타순 포인터의 타자
-        } else {
-            stopPlayer(transitionFade()); current = null; phase = Phase.IDLE
-            dbgMsg = "상대팀 공격 – 대기"; refresh()
-        }
-    }
-
-    /** 공격 줄의 팀 이름으로 어느 줄이 내 팀인지 파악 (한 줄을 알면 다른 줄은 반대) */
-    private fun updateMine(f: Bitmap, off: Int) {
-        if (!orderOn() || off == 0 || mineBusy) return
-        val my = Store.str(this, "team").trim()
-        if (my.isEmpty()) return
-        val now = SystemClock.elapsedRealtime()
-        if (rowMine[off] != null && now - rowMineAt[off] <= 20000L) return
-        mineBusy = true
-        val bmp = binarize(crop(f, if (off == 1) Regions.TEAM_TOP else Regions.TEAM_BOT), 5)
-        ocr(bmp) { tt ->
-            val t = Matcher.norm(tt)
-            val m = Matcher.norm(my)
-            if (t.isNotEmpty() && m.isNotEmpty()) {
-                val mine = t.contains(m)
-                val at = SystemClock.elapsedRealtime()
-                rowMine[off] = mine; rowMineAt[off] = at
-                rowMine[3 - off] = !mine; rowMineAt[3 - off] = at
-            }
-            mineBusy = false
-        }
-    }
-
-    /** 결과 배너(OUT / STRIKE OUT)는 어두운 빨강 바탕이라 색으로 먼저 찾고, 글자를 읽어 확인 */
-    private fun maybeSampleResult(f: Bitmap) {
-        if (!orderOn() || resultBusy) return
-        val now = SystemClock.elapsedRealtime()
-        if (now < lastResultAt) return
-        lastResultAt = now + 350L
-        val box = when {
-            redFraction(f, Regions.RESULT_TOP) >= 0.2f -> Regions.RESULT_TOP
-            redFraction(f, Regions.RESULT_MID) >= 0.2f -> Regions.RESULT_MID
-            else -> null
-        }
-        if (box == null) {
-            if (++resultMiss >= 4) resultVisible = false   // 배너가 사라짐
-            return
-        }
-        resultMiss = 0
-        if (resultVisible) return                          // 이미 처리한 배너
-        resultBusy = true
-        ocr(binarize(crop(f, box), 3)) { t -> onResultText(t) }
-    }
-
-    private fun onResultText(t: String) {
-        resultBusy = false
-        if (isOutText(t)) {
-            resultVisible = true
-            val my = Store.str(this, "team").trim()
-            // 배너가 스코어보드를 가리므로 마지막으로 확인한 공격 줄 기준
-            val mine = if (my.isEmpty()) true else (rowMine[lastOffRow] ?: true)
-            if (mine) onOutRecognized()
-            else { dbgMsg = "상대팀 아웃 – 무시"; refresh() }
-        } else {
-            lastResultAt = SystemClock.elapsedRealtime() + 1200L   // 다른 빨간 배너면 잠시 쉼
-        }
-    }
-
-    private fun isOutText(t: String): Boolean {
-        val u = t.uppercase().replace("0UT", "OUT")
-        return Regex("(?<![A-Z])OUT(?![A-Z])").containsMatchIn(u) ||
-            u.contains("STRIKEOUT") || u.contains("삼진") || u.contains("아웃")
-    }
-
-    private fun onOutRecognized() {
-        val now = SystemClock.elapsedRealtime()
-        if (now - lastAdvanceAt < 4000L) return
-        lastAdvanceAt = now
-        val order = Store.order(this)
-        val idx = (Store.int(this, "orderIdx", 0) + 1) % order.size
-        Store.putInt(this, "orderIdx", idx)
-        val startRow = lastOffRow
-        cancelWalk()
-        stopPlayer(transitionFade())      // 아웃된 타자의 응원가는 서서히 정리
-        current = null; phase = Phase.IDLE
-        dbgMsg = "아웃! 다음 타자: ${idx + 1}번"
-        refresh()
-        val r = Runnable {
-            walkRunnable = null
-            // 3아웃으로 공수교대가 됐다면 시작하지 않음 (우리 공격이 다시 시작될 때 재생)
-            if (lastOffRow == startRow) startWalk(pointerPlayer(), "아웃 후 ${idx + 1}번")
-        }
-        walkRunnable = r
-        handler.postDelayed(r, ORDER_DELAY)
-    }
-
-    private fun redFraction(b: Bitmap, r: FloatArray): Float {
-        val q = rect(b, r)
-        var tot = 0; var cnt = 0
-        var y = q[1]
-        while (y < q[1] + q[3]) {
-            var x = q[0]
-            while (x < q[0] + q[2]) {
-                val c = b.getPixel(x, y)
-                val rr = Color.red(c); val g = Color.green(c); val bl = Color.blue(c)
-                tot++
-                if (rr in 60..170 && rr > g + 30 && rr > bl + 30 && rr + g + bl < 330) cnt++
-                x += 3
-            }
-            y += 3
-        }
-        return if (tot == 0) 0f else cnt.toFloat() / tot
     }
 
     // ───────────────────────── 이닝 인식 / 팀 응원가 ─────────────────────────

@@ -119,9 +119,9 @@ object Store {
 
 /**
  * 화면 영역 (좌, 위, 너비, 높이) — 화면 대비 비율.
- * 사용자가 직접 지정한 6개 박스(타자 이름 / PLAY BALL / 스코어보드 / 이닝 / 해설 / 선수 소개바)를 저장해 두고,
+ * 사용자가 직접 지정한 7개 박스(타자 이름 / PLAY BALL / 스코어보드 / 이닝 / 해설 / 결과 배너 위·가운데)를 저장해 두고,
  * 거기서 노란 막대·팀 이름·이닝 숫자·초말 삼각형 영역을 계산합니다.
- * 저장된 설정이 없으면 기본값을 씁니다. (스코어보드·이닝·소개바는 1080x2340 폰 스크린샷에서 측정,
+ * 저장된 설정이 없으면 기본값을 씁니다. (스코어보드·이닝·결과 배너는 1080x2340 폰 스크린샷에서 측정,
  * 타자 이름·PLAY BALL·해설은 다른 스크린샷을 화면 너비 기준으로 환산한 추정값이라 직접 맞춰 주는 게 좋아요)
  */
 object Regions {
@@ -131,7 +131,6 @@ object Regions {
     val D_SCORE = floatArrayOf(0.05f, 0.0432f, 0.1583f, 0.0662f)   // 노란 막대 ~ 팀 이름, 두 줄 전체
     val D_INNING = floatArrayOf(0.0185f, 0.0684f, 0.0259f, 0.0299f) // 이닝 숫자 + ▲▼
     val D_COMMENT = floatArrayOf(0.07f, 0.9718f, 0.89f, 0.0205f)   // 하단 해설 바
-    val D_INTRO = floatArrayOf(0.25f, 0.8654f, 0.6296f, 0.0342f)   // 선수 소개바(번호·이름)
     val D_RTOP = floatArrayOf(0.0074f, 0.0427f, 0.6796f, 0.0662f)  // 결과 배너(위쪽, 예: STRIKE OUT)
     val D_RMID = floatArrayOf(0.30f, 0.282f, 0.40f, 0.0598f)       // 결과 배너(가운데, 예: OUT)
 
@@ -145,16 +144,15 @@ object Regions {
     @Volatile var INNING_NUM: FloatArray = floatArrayOf()
     @Volatile var INNING_TRI: FloatArray = floatArrayOf()
     @Volatile var COMMENT: FloatArray = D_COMMENT
-    @Volatile var INTRO: FloatArray = D_INTRO
     @Volatile var RESULT_TOP: FloatArray = D_RTOP
     @Volatile var RESULT_MID: FloatArray = D_RMID
     @Volatile var pbThreshold = 0.35f
 
-    init { apply(D_BATTER, D_PB, D_SCORE, D_INNING, D_COMMENT, D_INTRO, D_RTOP, D_RMID, null) }
+    init { apply(D_BATTER, D_PB, D_SCORE, D_INNING, D_COMMENT, D_RTOP, D_RMID, null) }
 
     fun apply(
         batter: FloatArray, pb: FloatArray, score: FloatArray, inning: FloatArray,
-        comment: FloatArray, intro: FloatArray, rtop: FloatArray, rmid: FloatArray, pbBase: Float?
+        comment: FloatArray, rtop: FloatArray, rmid: FloatArray, pbBase: Float?
     ) {
         BATTER = batter
         PLAYBALL = pb
@@ -166,7 +164,6 @@ object Regions {
         INNING_NUM = floatArrayOf(inning[0], inning[1], inning[2], inning[3] * 0.6f)
         INNING_TRI = floatArrayOf(inning[0], inning[1] + inning[3] * 0.6f, inning[2], inning[3] * 0.4f)
         COMMENT = comment
-        INTRO = intro
         RESULT_TOP = rtop
         RESULT_MID = rmid
         pbThreshold = if (pbBase == null) 0.35f else (pbBase * 0.5f).coerceIn(0.08f, 0.35f)
@@ -180,7 +177,7 @@ object Regions {
         return FloatArray(4) { a.getDouble(it).toFloat() }
     }
 
-    private fun applyDefaults() = apply(D_BATTER, D_PB, D_SCORE, D_INNING, D_COMMENT, D_INTRO, D_RTOP, D_RMID, null)
+    private fun applyDefaults() = apply(D_BATTER, D_PB, D_SCORE, D_INNING, D_COMMENT, D_RTOP, D_RMID, null)
 
     /** 저장된 설정을 읽어 적용 (없으면 기본값) */
     fun load(c: Context) {
@@ -191,7 +188,7 @@ object Regions {
             val pbBase = if (o.has("pbBase")) o.getDouble("pbBase").toFloat() else null
             apply(
                 arr(o, "batter", D_BATTER), arr(o, "pb", D_PB), arr(o, "score", D_SCORE),
-                arr(o, "inning", D_INNING), arr(o, "comment", D_COMMENT), arr(o, "intro", D_INTRO),
+                arr(o, "inning", D_INNING), arr(o, "comment", D_COMMENT),
                 arr(o, "rtop", D_RTOP), arr(o, "rmid", D_RMID), pbBase
             )
         } catch (e: Exception) {
@@ -206,7 +203,7 @@ object Regions {
     }
 
     /**
-     * boxes: [타자, PLAY BALL, 스코어보드, 이닝, 해설, 소개바] (화면 대비 비율)
+     * boxes: [타자, PLAY BALL, 스코어보드, 이닝, 해설, 결과 배너(위), 결과 배너(가운데)] (화면 대비 비율)
      * pbBase: 이번 화면에서 PLAY BALL 버튼이 보였을 때의 보라색 비율. 버튼이 안 보이는 화면이면 null → 이전 값 유지
      */
     fun save(c: Context, w: Int, h: Int, boxes: List<FloatArray>, pbBase: Float?) {
@@ -214,8 +211,8 @@ object Regions {
         val base = pbBase ?: savedPbBase(c)
         val o = JSONObject().put("w", w).put("h", h)
             .put("batter", ja(boxes[0])).put("pb", ja(boxes[1])).put("score", ja(boxes[2]))
-            .put("inning", ja(boxes[3])).put("comment", ja(boxes[4])).put("intro", ja(boxes[5]))
-            .put("rtop", ja(boxes[6])).put("rmid", ja(boxes[7]))
+            .put("inning", ja(boxes[3])).put("comment", ja(boxes[4]))
+            .put("rtop", ja(boxes[5])).put("rmid", ja(boxes[6]))
         if (base != null) o.put("pbBase", base.toDouble())
         prefs(c).edit().putString("calib", o.toString())
             .putInt("calibVer", prefs(c).getInt("calibVer", 0) + 1).apply()
@@ -243,13 +240,13 @@ object Regions {
                 if (Math.abs(sw.toDouble() * h - w.toDouble() * sh) / (sw.toDouble() * h) < 0.03) {
                     return listOf(
                         arr(o, "batter", D_BATTER), arr(o, "pb", D_PB), arr(o, "score", D_SCORE),
-                        arr(o, "inning", D_INNING), arr(o, "comment", D_COMMENT), arr(o, "intro", D_INTRO),
+                        arr(o, "inning", D_INNING), arr(o, "comment", D_COMMENT),
                         arr(o, "rtop", D_RTOP), arr(o, "rmid", D_RMID)
                     )
                 }
             } catch (e: Exception) {}
         }
-        return listOf(D_BATTER, D_PB, D_SCORE, D_INNING, D_COMMENT, D_INTRO, D_RTOP, D_RMID)
+        return listOf(D_BATTER, D_PB, D_SCORE, D_INNING, D_COMMENT, D_RTOP, D_RMID)
     }
 }
 
